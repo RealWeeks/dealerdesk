@@ -1,4 +1,4 @@
-import type { AIExtraction, CarSearch, DealerSeed, GeneratedReply, InitialOutreachMessage, Interaction, MessageTemplate, Offer, SearchDealer, Task, TimelineItem, User } from "../types/domain";
+import type { AIExtraction, CarSearch, DealerSeed, GeneratedReply, InitialOutreachMessage, Interaction, MessageTemplate, Offer, SearchDealer, Task, TimelineItem, User, Vehicle, VehicleCapture } from "../types/domain";
 
 const baseUrl = process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
@@ -33,6 +33,11 @@ export const api = {
     apiFetch<CarSearch>(`/car-searches/${carSearchId}`, { method: "PATCH", token, body: JSON.stringify(body) }),
   searchDealerSeeds: (params: { brand: string; zip: string; radius: number }) =>
     apiFetch<DealerSeed[]>(`/dealer-seeds/search?brand=${encodeURIComponent(params.brand)}&zip=${encodeURIComponent(params.zip)}&radius=${params.radius}`),
+  discoverDealers: (token: string, params: { brand: string; zip: string; radius: number; refresh?: boolean }) =>
+    apiFetch<{ dealers: DealerSeed[]; warnings?: string[] }>(
+      `/dealer-seeds/discover?brand=${encodeURIComponent(params.brand)}&zip=${encodeURIComponent(params.zip)}&radius=${params.radius}${params.refresh ? "&refresh=true" : ""}`,
+      { token }
+    ),
   addDealer: (token: string, carSearchId: string, dealerSeedId: string) =>
     apiFetch<SearchDealer>(`/car-searches/${carSearchId}/dealers`, { method: "POST", token, body: JSON.stringify({ dealerSeedId }) }),
   searchDealers: (token: string, carSearchId: string) =>
@@ -40,6 +45,15 @@ export const api = {
   dealer: (token: string, dealerId: string) => apiFetch<SearchDealer>(`/dealers/${dealerId}`, { token }),
   updateDealer: (token: string, dealerId: string, body: Partial<Pick<SearchDealer, "status" | "priority">> & { lastContactedAt?: string; nextFollowUpAt?: string }) =>
     apiFetch<SearchDealer>(`/dealers/${dealerId}`, { method: "PATCH", token, body: JSON.stringify(body) }),
+  setDealerFocusVehicle: (token: string, dealerId: string, focusVehicleId: string) =>
+    apiFetch<SearchDealer>(`/dealers/${dealerId}`, { method: "PATCH", token, body: JSON.stringify({ focusVehicleId }) }),
+  vehicles: (token: string, carSearchId: string) => apiFetch<Vehicle[]>(`/car-searches/${carSearchId}/vehicles`, { token }),
+  createVehicle: (token: string, carSearchId: string, body: Omit<Vehicle, "_id">) =>
+    apiFetch<Vehicle>(`/car-searches/${carSearchId}/vehicles`, { method: "POST", token, body: JSON.stringify(body) }),
+  updateVehicle: (token: string, vehicleId: string, body: Partial<Omit<Vehicle, "_id">>) =>
+    apiFetch<Vehicle>(`/vehicles/${vehicleId}`, { method: "PATCH", token, body: JSON.stringify(body) }),
+  captureVehicle: (token: string, body: { carSearchId: string; dealerId: string; source: "url" | "image" | "text"; url?: string; imageBase64?: string; rawText?: string }) =>
+    apiFetch<VehicleCapture>("/ai/capture-vehicle", { method: "POST", token, body: JSON.stringify(body) }),
   offers: (token: string, carSearchId: string) => apiFetch<Offer[]>(`/car-searches/${carSearchId}/offers`, { token }),
   createOffer: (token: string, carSearchId: string, body: Omit<Offer, "_id">) =>
     apiFetch<Offer>(`/car-searches/${carSearchId}/offers`, { method: "POST", token, body: JSON.stringify(body) }),
@@ -58,14 +72,14 @@ export const api = {
   },
   dealerTimeline: (token: string, dealerId: string) =>
     apiFetch<{ items: TimelineItem[] }>(`/dealers/${dealerId}/timeline`, { token }),
-  initialOutreachMessage: (token: string, body: { carSearchId: string; dealerId?: string; templateId?: string; tone?: "friendly" | "firm" | "concise" }) =>
+  initialOutreachMessage: (token: string, body: { carSearchId: string; dealerId?: string; vehicleId?: string; templateId?: string; tone?: "friendly" | "firm" | "concise" }) =>
     apiFetch<InitialOutreachMessage>("/outreach/initial-message", { method: "POST", token, body: JSON.stringify(body) }),
-  markOutreachContacted: (token: string, body: { carSearchId: string; dealerIds: string[]; messageText: string; templateId?: string; createFollowUp: boolean; followUpDueAt?: string }) =>
+  markOutreachContacted: (token: string, body: { carSearchId: string; dealerIds: string[]; vehicleId?: string; messageText: string; templateId?: string; createFollowUp: boolean; followUpDueAt?: string }) =>
     apiFetch<{ dealers: SearchDealer[]; interactions: Interaction[]; tasks: Task[]; templateUsages?: unknown[] }>("/outreach/mark-contacted", { method: "POST", token, body: JSON.stringify(body) }),
   parseDealerMessage: (token: string, body: { carSearchId: string; dealerId: string; rawText: string }) =>
     apiFetch<AIExtraction>("/ai/parse-dealer-message", { method: "POST", token, body: JSON.stringify(body) }),
-  generateReply: (token: string, body: { carSearchId: string; dealerId: string; offerId?: string; tone?: "friendly" | "firm" | "concise"; userGoal?: string }) =>
+  generateReply: (token: string, body: { carSearchId: string; dealerId: string; offerId?: string; vehicleId?: string; tone?: "friendly" | "firm" | "concise"; userGoal?: string }) =>
     apiFetch<GeneratedReply>("/ai/generate-reply", { method: "POST", token, body: JSON.stringify(body) }),
-  confirmExtraction: (token: string, extractionId: string) =>
-    apiFetch<{ extraction: unknown; offer: Offer | null; interaction: unknown }>(`/ai-extractions/${extractionId}/confirm`, { method: "POST", token })
+  confirmExtraction: (token: string, extractionId: string, body?: { vehicle?: Partial<Omit<Vehicle, "_id">> }) =>
+    apiFetch<{ extraction: unknown; offer: Offer | null; interaction: unknown; vehicle?: Vehicle }>(`/ai-extractions/${extractionId}/confirm`, { method: "POST", token, body: body ? JSON.stringify(body) : undefined })
 };

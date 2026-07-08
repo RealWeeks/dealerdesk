@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
-import { Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Linking, StyleSheet, Text, TextInput, View } from "react-native";
+import { Button } from "../components/Button";
 import { Card } from "../components/Card";
+import { EmptyStateCard } from "../components/EmptyStateCard";
+import { MakePicker } from "../components/MakePicker";
+import { PageHeader } from "../components/PageHeader";
+import { RichList, RichListRow } from "../components/RichList";
 import { Screen } from "../components/Screen";
+import { Section } from "../components/Section";
 import { useDealDeskApp } from "../hooks/useDealDeskApp";
 import { theme } from "../theme/theme";
 import type { DealerSeed } from "../types/domain";
@@ -12,6 +18,7 @@ export function FindDealersScreen({ onAddDealer = () => undefined }: { onAddDeal
   const [zip, setZip] = useState(activeSearch?.zipCode ?? "04101");
   const [radius, setRadius] = useState(String(activeSearch?.searchRadiusMiles ?? 150));
   const [results, setResults] = useState<DealerSeed[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { searchDealerSeeds } = useDealDeskApp();
 
@@ -24,8 +31,11 @@ export function FindDealersScreen({ onAddDealer = () => undefined }: { onAddDeal
 
   async function submitSearch() {
     setLoading(true);
+    setNotice(null);
     try {
-      setResults(await searchDealerSeeds(brand, zip, Number(radius)));
+      const res = await searchDealerSeeds(brand, zip, Number(radius));
+      setResults(res.dealers);
+      setNotice(res.warnings[0] ?? null);
     } finally {
       setLoading(false);
     }
@@ -33,41 +43,51 @@ export function FindDealersScreen({ onAddDealer = () => undefined }: { onAddDeal
 
   return (
     <Screen>
-      <Text style={styles.title}>Find dealers</Text>
+      <PageHeader title="Find dealers" description="Search for dealerships that carry your car, then add the ones you want to negotiate with to your search." />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Card>
         <View style={styles.filters}>
-          <TextInput accessibilityLabel="Dealer brand" value={brand} onChangeText={setBrand} placeholder="Lexus" style={styles.input} />
-          <TextInput accessibilityLabel="Search ZIP" value={zip} onChangeText={setZip} placeholder="04101" style={styles.input} />
-          <TextInput accessibilityLabel="Search radius" value={radius} onChangeText={setRadius} keyboardType="number-pad" placeholder="150 miles" style={styles.input} />
-          <Pressable accessibilityRole="button" onPress={submitSearch} disabled={loading} style={styles.button}><Text style={styles.buttonText}>{loading ? "Searching..." : "Search Seeded Dealers"}</Text></Pressable>
+          <MakePicker label="Dealer brand" value={brand} onChange={setBrand} />
+          <TextInput accessibilityLabel="Search ZIP" value={zip} onChangeText={setZip} placeholder="04101" placeholderTextColor={theme.colors.faint} style={styles.input} />
+          <TextInput accessibilityLabel="Search radius" value={radius} onChangeText={setRadius} keyboardType="number-pad" placeholder="150 miles" placeholderTextColor={theme.colors.faint} style={styles.input} />
+          <Button label={loading ? "Searching..." : "Search dealers"} onPress={submitSearch} disabled={loading} variant="primary" />
         </View>
       </Card>
-      {!results.length && !loading ? <Text style={styles.muted}>Search seeded dealers to add one to your active car search.</Text> : null}
-      {results.map((dealer) => (
-        <Card key={dealer._id}>
-          <Text style={styles.dealer}>{dealer.name}</Text>
-          <Text style={styles.muted}>{dealer.city}, {dealer.state} · {dealer.distanceMiles} mi</Text>
-          <View style={styles.actions}>
-            <Pressable accessibilityRole="button" onPress={async () => { await addDealer(dealer._id); onAddDealer(dealer._id); }} style={styles.button}><Text style={styles.buttonText}>Add</Text></Pressable>
-            <Pressable accessibilityRole="button" onPress={() => Linking.openURL(`tel:${dealer.phone}`)} style={styles.secondary}><Text style={styles.secondaryText}>Call</Text></Pressable>
-          </View>
-        </Card>
-      ))}
+      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+      {!results.length && !loading && !notice ? (
+        <EmptyStateCard icon="search-outline" title="Search to find dealers near you" description="Enter a brand, ZIP, and radius above to find real dealerships near you to add to your car search." />
+      ) : null}
+      {results.length ? (
+        <Section title="Results" description="From OpenStreetMap" divider={false}>
+          <RichList>
+            {results.map((dealer) => (
+              <RichListRow
+                key={dealer._id}
+                trailing={
+                  <>
+                    <Button label="Add" size="sm" onPress={async () => { await addDealer(dealer._id); onAddDealer(dealer._id); }} />
+                    {dealer.websiteUrl ? <Button label="Website" variant="link" size="sm" accessibilityLabel={`Website for ${dealer.name}`} onPress={() => Linking.openURL(dealer.websiteUrl!)} /> : null}
+                    {dealer.phone ? <Button label="Call" variant="link" size="sm" onPress={() => Linking.openURL(`tel:${dealer.phone}`)} /> : null}
+                  </>
+                }
+              >
+                <Text style={styles.dealer}>{dealer.name}</Text>
+                <Text style={styles.muted}>{[dealer.city, dealer.state].filter(Boolean).join(", ")} · {dealer.distanceMiles} mi</Text>
+                {dealer.address ? <Text style={styles.muted}>{dealer.address}</Text> : null}
+              </RichListRow>
+            ))}
+          </RichList>
+        </Section>
+      ) : null}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  title: { color: theme.colors.text, fontSize: 26, fontWeight: "900" },
-  filters: { gap: 10 },
-  input: { borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, minHeight: 44, paddingHorizontal: 12 },
-  dealer: { color: theme.colors.text, fontSize: 18, fontWeight: "800" },
-  muted: { color: theme.colors.muted },
-  error: { color: theme.colors.danger, fontWeight: "700" },
-  actions: { flexDirection: "row", gap: 10 },
-  button: { backgroundColor: theme.colors.primary, borderRadius: theme.radius, paddingHorizontal: 16, paddingVertical: 10 },
-  buttonText: { color: "#fff", fontWeight: "800" },
-  secondary: { borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 10 },
-  secondaryText: { color: theme.colors.text, fontWeight: "800" }
+  filters: { gap: theme.spacing.sm },
+  input: { ...theme.typography.body, backgroundColor: theme.colors.inputBg, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, color: theme.colors.text, minHeight: 44, paddingHorizontal: theme.spacing.md },
+  dealer: { ...theme.typography.heading, color: theme.colors.text },
+  muted: { ...theme.typography.body, color: theme.colors.muted },
+  notice: { ...theme.typography.body, color: theme.colors.warning },
+  error: { ...theme.typography.body, color: theme.colors.danger, fontFamily: theme.fonts.bold }
 });

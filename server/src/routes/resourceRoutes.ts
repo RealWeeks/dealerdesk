@@ -290,6 +290,28 @@ router.post("/ai-extractions/:id/confirm", async (req: AuthRequest, res, next) =
     extraction.set("userConfirmed", true);
     await extraction.save();
     const extracted = extraction.get("extractedJson");
+
+    // Listing captures become a Vehicle attached to the dealer, and seed the
+    // dealer's focus car when none is set yet. The review screen may send edited
+    // fields in req.body.vehicle, which win over the raw extraction.
+    if (extraction.get("inputType") === "listing") {
+      const draft = (extracted?.vehicle ?? {}) as Record<string, unknown>;
+      const edits = req.body?.vehicle ? vehiclePatchSchema.parse(req.body.vehicle) : {};
+      const vehicle = await Vehicle.create({ ...draft, ...edits, userId: req.user!.id, carSearchId, dealerId });
+      if (dealerId) {
+        const dealer = await SearchDealer.findOne({ _id: dealerId, userId: req.user!.id });
+        if (dealer && !dealer.get("focusVehicleId")) {
+          dealer.set("focusVehicleId", vehicle._id);
+          await dealer.save();
+        }
+      }
+      return res.json({ extraction, vehicle });
+    }
+
+    // Link the quote + inbound message to the dealer's focus car when set.
+    const dealerFocus = dealerId ? await SearchDealer.findOne({ _id: dealerId, userId: req.user!.id }) : null;
+    const focusVehicleId = dealerFocus?.get("focusVehicleId") ?? undefined;
+
     let offer = null;
     let interaction = null;
     if (extracted?.offer && dealerId) {
@@ -298,6 +320,7 @@ router.post("/ai-extractions/:id/confirm", async (req: AuthRequest, res, next) =
         userId: req.user!.id,
         carSearchId,
         dealerId,
+        vehicleId: focusVehicleId,
         redFlags: extraction.get("redFlags"),
         missingInfo: extraction.get("missingInfo"),
         sourceType: "paste",
@@ -311,6 +334,7 @@ router.post("/ai-extractions/:id/confirm", async (req: AuthRequest, res, next) =
         carSearchId,
         dealerId,
         offerId: offer?.id,
+        vehicleId: focusVehicleId,
         type: "email",
         direction: "inbound",
         rawContent: extraction.get("rawInput"),

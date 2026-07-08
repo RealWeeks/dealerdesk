@@ -24,6 +24,7 @@ export type DealerSeed = {
   _id: string;
   name: string;
   brand: string;
+  address?: string;
   city: string;
   state: string;
   phone?: string;
@@ -46,8 +47,37 @@ export type SearchDealer = {
   distanceMiles?: number;
   status: string;
   priority: "low" | "medium" | "high";
+  focusVehicleId?: string;
   lastContactedAt?: string;
   nextFollowUpAt?: string;
+};
+
+export type Vehicle = {
+  _id: string;
+  dealerId?: string;
+  carSearchId?: string;
+  year?: number;
+  make?: string;
+  model?: string;
+  trim?: string;
+  vin?: string;
+  stockNumber?: string;
+  msrp?: number;
+  listedPrice?: number;
+  exteriorColor?: string;
+  interiorColor?: string;
+  packages?: string[];
+  listingUrl?: string;
+  status?: "interested" | "contacted" | "quoted" | "rejected" | "finalist" | "purchased";
+};
+
+// Result of an AI/heuristic listing capture, awaiting user review before it
+// becomes a Vehicle. `vehicle` holds the pre-filled (editable) fields.
+export type VehicleCapture = {
+  extractionId: string;
+  vehicle: Omit<Vehicle, "_id">;
+  confidence: "low" | "medium" | "high";
+  warnings: string[];
 };
 
 export type Offer = {
@@ -81,6 +111,7 @@ export type Offer = {
 export type Interaction = {
   _id: string;
   dealerId?: string;
+  vehicleId?: string;
   offerId?: string;
   type: "email" | "text" | "phone" | "in_person" | "note";
   direction: "inbound" | "outbound" | "internal";

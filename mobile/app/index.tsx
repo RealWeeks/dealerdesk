@@ -1,2 +1,2 @@
-import { LoginScreen } from "../src/screens/LoginScreen";
-export default LoginScreen;
+import { LandingScreen } from "../src/screens/LandingScreen";
+export default LandingScreen;

@@ -5,13 +5,21 @@
     "scheme": "dealdesk",
     "version": "0.1.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0F1A",
     "newArchEnabled": true,
     "plugins": [
       "expo-router",
       "expo-secure-store",
       "expo-font"
     ],
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "name": "DealDesk",
+      "themeColor": "#0B0F1A",
+      "backgroundColor": "#0B0F1A"
+    },
     "extra": {
       "router": {}
     }

@@ -19,6 +19,7 @@ const searchDealerSchema = new Schema(
     status: { type: String, enum: ["not_contacted", "contacted", "needs_reply", "quoted", "negotiating", "rejected", "finalist", "purchased_from"], default: "not_contacted" },
     priority: { type: String, enum: ["low", "medium", "high"], default: "medium" },
     notes: String,
+    focusVehicleId: { type: Schema.Types.ObjectId, ref: "Vehicle" },
     lastContactedAt: Date,
     nextFollowUpAt: Date
   },

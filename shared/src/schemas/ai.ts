@@ -48,3 +48,24 @@ export const aiParsedDealerMessageSchema = z.object({
 });
 
 export type AIParsedDealerMessage = z.infer<typeof aiParsedDealerMessageSchema>;
+
+export const aiParsedListingSchema = z.object({
+  vehicle: z.object({
+    year: z.number().optional(),
+    make: z.string().optional(),
+    model: z.string().optional(),
+    trim: z.string().optional(),
+    vin: z.string().optional(),
+    stockNumber: z.string().optional(),
+    msrp: z.number().optional(),
+    listedPrice: z.number().optional(),
+    exteriorColor: z.string().optional(),
+    interiorColor: z.string().optional(),
+    packages: z.array(z.string()).optional(),
+    listingUrl: z.string().optional()
+  }).default({}),
+  confidence: z.enum(["low", "medium", "high"]),
+  warnings: z.array(z.string()).default([])
+});
+
+export type AIParsedListing = z.infer<typeof aiParsedListingSchema>;

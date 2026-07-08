@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 import { api } from "../api/client";
 import { clearStoredToken, getStoredToken, storeToken } from "../api/tokenStore";
-import type { AIExtraction, CarSearch, DealerSeed, GeneratedReply, InitialOutreachMessage, Interaction, MessageTemplate, Offer, SearchDealer, Task, TimelineItem, User } from "../types/domain";
+import type { AIExtraction, CarSearch, DealerSeed, GeneratedReply, InitialOutreachMessage, Interaction, MessageTemplate, Offer, SearchDealer, Task, TimelineItem, User, Vehicle, VehicleCapture } from "../types/domain";
 
 export type AppContextValue = {
   token: string | null;
@@ -9,8 +9,10 @@ export type AppContextValue = {
   activeSearch: CarSearch | null;
   dealers: SearchDealer[];
   offers: Offer[];
+  vehicles: Vehicle[];
   selectedDealer: SearchDealer | null;
   pendingExtraction: AIExtraction | null;
+  pendingVehicleCapture: VehicleCapture | null;
   generatedReply: GeneratedReply | null;
   initialOutreach: InitialOutreachMessage | null;
   interactions: Interaction[];
@@ -24,10 +26,15 @@ export type AppContextValue = {
   logout: () => Promise<void>;
   createDefaultSearch: () => Promise<void>;
   saveSearch: (search: Omit<CarSearch, "_id">) => Promise<boolean>;
-  searchDealerSeeds: (brand: string, zip: string, radius: number) => Promise<DealerSeed[]>;
+  searchDealerSeeds: (brand: string, zip: string, radius: number) => Promise<{ dealers: DealerSeed[]; warnings: string[] }>;
   addDealer: (dealerSeedId: string) => Promise<void>;
   saveManualQuote: (offer: Omit<Offer, "_id" | "dealerId" | "sourceType">) => Promise<boolean>;
   selectDealer: (dealer: SearchDealer | null) => void;
+  captureVehicleFromUrl: (url: string) => Promise<boolean>;
+  captureVehicleFromImage: (base64: string) => Promise<boolean>;
+  confirmVehicleCapture: (vehicle: Partial<Omit<Vehicle, "_id">>) => Promise<boolean>;
+  discardVehicleCapture: () => void;
+  setFocusVehicle: (vehicleId: string) => Promise<void>;
   parseDealerMessage: (rawText: string) => Promise<void>;
   confirmPendingExtraction: () => Promise<void>;
   generateReply: () => Promise<void>;
@@ -48,8 +55,10 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
   const [activeSearch, setActiveSearch] = useState<CarSearch | null>(null);
   const [dealers, setDealers] = useState<SearchDealer[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [selectedDealer, setSelectedDealer] = useState<SearchDealer | null>(null);
   const [pendingExtraction, setPendingExtraction] = useState<AIExtraction | null>(null);
+  const [pendingVehicleCapture, setPendingVehicleCapture] = useState<VehicleCapture | null>(null);
   const [generatedReply, setGeneratedReply] = useState<GeneratedReply | null>(null);
   const [initialOutreach, setInitialOutreach] = useState<InitialOutreachMessage | null>(null);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
@@ -64,13 +73,15 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
     setUser(me.user);
     setActiveSearch(search);
     if (search?._id) {
-      const [nextDealers, nextOffers] = await Promise.all([api.searchDealers(nextToken, search._id), api.offers(nextToken, search._id)]);
+      const [nextDealers, nextOffers, nextVehicles] = await Promise.all([api.searchDealers(nextToken, search._id), api.offers(nextToken, search._id), api.vehicles(nextToken, search._id)]);
       setDealers(nextDealers);
       setOffers(nextOffers);
+      setVehicles(nextVehicles);
       setSelectedDealer((current) => nextDealers.find((dealer) => dealer._id === current?._id) ?? nextDealers[0] ?? null);
     } else {
       setDealers([]);
       setOffers([]);
+      setVehicles([]);
       setSelectedDealer(null);
       setInteractions([]);
       setTimeline([]);
@@ -105,8 +116,10 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
           setActiveSearch(null);
           setDealers([]);
           setOffers([]);
+          setVehicles([]);
           setSelectedDealer(null);
           setPendingExtraction(null);
+          setPendingVehicleCapture(null);
           setGeneratedReply(null);
           setInitialOutreach(null);
           setInteractions([]);
@@ -146,8 +159,10 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
     activeSearch,
     dealers,
     offers,
+    vehicles,
     selectedDealer,
     pendingExtraction,
+    pendingVehicleCapture,
     generatedReply,
     initialOutreach,
     interactions,
@@ -165,8 +180,10 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
       setActiveSearch(null);
       setDealers([]);
       setOffers([]);
+      setVehicles([]);
       setSelectedDealer(null);
       setPendingExtraction(null);
+      setPendingVehicleCapture(null);
       setGeneratedReply(null);
       setInitialOutreach(null);
       setInteractions([]);
@@ -190,6 +207,7 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
         setActiveSearch(search);
         setDealers([]);
         setOffers([]);
+        setVehicles([]);
         setInteractions([]);
         setTasks([]);
         setMessageTemplates([]);
@@ -204,20 +222,24 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
           : await api.createSearch(token, searchInput);
         setActiveSearch(search);
         if (search._id) {
-          const [nextDealers, nextOffers] = await Promise.all([api.searchDealers(token, search._id), api.offers(token, search._id)]);
+          const [nextDealers, nextOffers, nextVehicles] = await Promise.all([api.searchDealers(token, search._id), api.offers(token, search._id), api.vehicles(token, search._id)]);
           setDealers(nextDealers);
           setOffers(nextOffers);
+          setVehicles(nextVehicles);
           setSelectedDealer((current) => nextDealers.find((dealer) => dealer._id === current?._id) ?? nextDealers[0] ?? null);
         }
       });
     },
     searchDealerSeeds: async (brand, zip, radius) => {
+      if (!token) return { dealers: [], warnings: [] };
       try {
-        setError(null);
-        return await api.searchDealerSeeds({ brand, zip, radius });
+        // Live discovery of real dealerships (free/keyless), cached server-side.
+        // Warnings are returned to the Find Dealers screen (shown locally) rather than
+        // written to the global error banner, so they don't bleed onto other screens.
+        const result = await api.discoverDealers(token, { brand, zip, radius });
+        return { dealers: result.dealers, warnings: result.warnings ?? [] };
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "Dealer search failed");
-        return [];
+        return { dealers: [], warnings: [caught instanceof Error ? caught.message : "Dealer search failed"] };
       }
     },
     addDealer: async (dealerSeedId) => {
@@ -232,7 +254,8 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
     saveManualQuote: async (offerInput) => {
       if (!token || !activeSearch || !selectedDealer) return false;
       return run(async () => {
-        await api.createOffer(token, activeSearch._id, { ...offerInput, dealerId: selectedDealer._id, sourceType: "manual" });
+        // Anchor the quote to the chosen car, or the dealer's focus car by default.
+        await api.createOffer(token, activeSearch._id, { ...offerInput, dealerId: selectedDealer._id, vehicleId: offerInput.vehicleId ?? selectedDealer.focusVehicleId, sourceType: "manual" });
         setOffers(await api.offers(token, activeSearch._id));
       });
     },
@@ -342,8 +365,41 @@ export function DealDeskProvider({ children }: PropsWithChildren) {
         setDealers((current) => current.map((dealer) => dealer._id === updated._id ? updated : dealer));
       });
     },
+    captureVehicleFromUrl: async (url) => {
+      if (!token || !activeSearch || !selectedDealer) return false;
+      return run(async () => {
+        setPendingVehicleCapture(await api.captureVehicle(token, { carSearchId: activeSearch._id, dealerId: selectedDealer._id, source: "url", url }));
+      });
+    },
+    captureVehicleFromImage: async (base64) => {
+      if (!token || !activeSearch || !selectedDealer) return false;
+      return run(async () => {
+        setPendingVehicleCapture(await api.captureVehicle(token, { carSearchId: activeSearch._id, dealerId: selectedDealer._id, source: "image", imageBase64: base64 }));
+      });
+    },
+    confirmVehicleCapture: async (vehicle) => {
+      if (!token || !activeSearch || !pendingVehicleCapture) return false;
+      return run(async () => {
+        await api.confirmExtraction(token, pendingVehicleCapture.extractionId, { vehicle });
+        setPendingVehicleCapture(null);
+        // Refresh vehicles and dealers — confirm may have set the dealer's focus car.
+        const [nextVehicles, nextDealers] = await Promise.all([api.vehicles(token, activeSearch._id), api.searchDealers(token, activeSearch._id)]);
+        setVehicles(nextVehicles);
+        setDealers(nextDealers);
+        setSelectedDealer((current) => nextDealers.find((dealer) => dealer._id === current?._id) ?? current);
+      });
+    },
+    discardVehicleCapture: () => setPendingVehicleCapture(null),
+    setFocusVehicle: async (vehicleId) => {
+      if (!token || !selectedDealer) return;
+      await run(async () => {
+        const updated = await api.setDealerFocusVehicle(token, selectedDealer._id, vehicleId);
+        setSelectedDealer(updated);
+        setDealers((current) => current.map((dealer) => dealer._id === updated._id ? updated : dealer));
+      });
+    },
     refresh
-  }), [activeSearch, authenticate, dealers, error, generatedReply, initialOutreach, interactions, loading, messageTemplates, offers, pendingExtraction, refresh, run, selectedDealer, tasks, timeline, token, user]);
+  }), [activeSearch, authenticate, dealers, error, generatedReply, initialOutreach, interactions, loading, messageTemplates, offers, pendingExtraction, pendingVehicleCapture, refresh, run, selectedDealer, tasks, timeline, token, user, vehicles]);
 
   return <DealDeskContext.Provider value={value}>{children}</DealDeskContext.Provider>;
 }

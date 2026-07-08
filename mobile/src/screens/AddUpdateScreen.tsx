@@ -1,11 +1,23 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput } from "react-native";
+import { StyleSheet, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
+import { AiBadge } from "../components/AiBadge";
+import { Badge } from "../components/Badge";
+import { Button } from "../components/Button";
 import { Card } from "../components/Card";
+import { GuidedPageHeader } from "../components/PageHeader";
 import { Screen } from "../components/Screen";
+import { Section } from "../components/Section";
 import { useDealDeskApp } from "../hooks/useDealDeskApp";
 import { ReviewAIExtractionScreen } from "./ReviewAIExtractionScreen";
 import { theme } from "../theme/theme";
+
+const EXTRACTS = [
+  "Selling price, taxes, fees, and true out-the-door total",
+  "Add-ons and anything that looks like a red flag",
+  "The dealer's ask and a suggested next step"
+];
 
 export function AddUpdateScreen() {
   const [rawText, setRawText] = useState("");
@@ -15,35 +27,63 @@ export function AddUpdateScreen() {
 
   return (
     <Screen>
-      <Text style={styles.title}>Add update</Text>
-      {selectedDealer ? <Text style={styles.muted}>Selected dealer: {selectedDealer.name}</Text> : <Text style={styles.muted}>Open a dealer from the Dealers tab before parsing a message.</Text>}
+      <GuidedPageHeader
+        title="Add dealer update"
+        description="Paste a dealer's email, text, or call notes and DealDesk reads it for you — pulling out prices, fees, and the next step to review before anything is saved."
+        status={
+          selectedDealer ? (
+            <View style={styles.selectedRow}>
+              <Ionicons name="storefront-outline" size={16} color={theme.colors.muted} />
+              <Text style={styles.selectedText}>Selected dealer: {selectedDealer.name}</Text>
+            </View>
+          ) : (
+            <Text style={styles.muted}>Open a dealer from the Dealers tab before parsing a message.</Text>
+          )
+        }
+      />
       {error ? <Text style={styles.error}>{error}</Text> : null}
+
       <Card>
-        <Text style={styles.kicker}>Paste dealer message</Text>
-        <TextInput accessibilityLabel="Dealer message" multiline value={rawText} onChangeText={setRawText} placeholder="Paste email, text, or call notes..." style={styles.textarea} />
-        <Pressable accessibilityRole="button" disabled={!selectedDealer || !rawText || loading} onPress={() => parseDealerMessage(rawText)} style={styles.button}><Text style={styles.buttonText}>{loading ? "Parsing..." : "Review AI Extraction"}</Text></Pressable>
+        <View style={styles.kickerRow}>
+          <Text style={styles.kicker}>Paste dealer message</Text>
+          <AiBadge label="AI" />
+        </View>
+        <TextInput accessibilityLabel="Dealer message" multiline value={rawText} onChangeText={setRawText} placeholder="Paste email, text, or call notes..." placeholderTextColor={theme.colors.faint} style={styles.textarea} />
+        <View style={styles.extractList}>
+          <Text style={styles.extractHeading}>What DealDesk will pull out</Text>
+          {EXTRACTS.map((item) => (
+            <View key={item} style={styles.extractRow}>
+              <Ionicons name="checkmark-circle-outline" size={15} color={theme.colors.accent} />
+              <Text style={styles.extractText}>{item}</Text>
+            </View>
+          ))}
+        </View>
+        <Button label={loading ? "Reading..." : "Review AI extraction"} disabled={!selectedDealer || !rawText || loading} onPress={() => parseDealerMessage(rawText)} style={styles.selfStart} />
       </Card>
-      <Card>
-        <Text style={styles.kicker}>Dictate call note</Text>
-        <Text style={styles.muted}>Speech-to-text placeholder ready for Expo voice integration.</Text>
-      </Card>
-      <Card>
-        <Text style={styles.kicker}>Manual quote</Text>
-        <Text style={styles.muted}>Enter quote fields directly when the dealer gives clean numbers.</Text>
-        <Pressable accessibilityRole="button" disabled={!selectedDealer} onPress={() => router.replace("/manual-quote")} style={styles.secondaryButton}><Text style={styles.secondaryText}>Enter Manual Quote</Text></Pressable>
-      </Card>
+
+      <Section title="Dictate a call note" right={<Badge label="Coming soon" tone="neutral" />}>
+        <Text style={styles.muted}>Soon you'll be able to talk through a call and let DealDesk transcribe and extract it. For now, paste your notes above.</Text>
+      </Section>
+
+      <Section title="Prefer to type the numbers?">
+        <Text style={styles.muted}>If the dealer already gave you clean figures, skip the AI step and enter the quote directly.</Text>
+        <Button label="Enter quote manually" variant="secondary" size="sm" disabled={!selectedDealer} onPress={() => router.replace("/manual-quote")} style={styles.selfStart} />
+      </Section>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  title: { color: theme.colors.text, fontSize: 26, fontWeight: "900" },
-  kicker: { color: theme.colors.muted, fontWeight: "800" },
-  muted: { color: theme.colors.muted },
-  error: { color: theme.colors.danger, fontWeight: "700" },
-  textarea: { borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, color: theme.colors.text, minHeight: 140, padding: 12, textAlignVertical: "top" },
-  button: { alignItems: "center", backgroundColor: theme.colors.primary, borderRadius: theme.radius, minHeight: 46, justifyContent: "center" },
-  buttonText: { color: "#fff", fontWeight: "800" },
-  secondaryButton: { alignItems: "center", borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, minHeight: 44, justifyContent: "center" },
-  secondaryText: { color: theme.colors.text, fontWeight: "800" }
+  selectedRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  selectedText: { ...theme.typography.body, color: theme.colors.text },
+  kicker: { ...theme.typography.label, color: theme.colors.muted, textTransform: "uppercase" },
+  kickerRow: { alignItems: "center", flexDirection: "row", gap: theme.spacing.sm, justifyContent: "space-between" },
+  muted: { ...theme.typography.body, color: theme.colors.muted },
+  error: { ...theme.typography.body, color: theme.colors.danger, fontFamily: theme.fonts.semibold },
+  textarea: { ...theme.typography.body, backgroundColor: theme.colors.inputBg, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, color: theme.colors.text, minHeight: 140, padding: theme.spacing.md, textAlignVertical: "top" },
+  extractList: { gap: 6, backgroundColor: theme.colors.surfaceAlt, borderRadius: theme.radii.md, padding: theme.spacing.md },
+  extractHeading: { ...theme.typography.caption, color: theme.colors.muted, textTransform: "uppercase", letterSpacing: 0.4 },
+  extractRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  extractText: { ...theme.typography.body, color: theme.colors.text, flex: 1 },
+  selfStart: { alignSelf: "flex-start" }
 });

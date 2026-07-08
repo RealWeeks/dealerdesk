@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
-import { Card } from "../components/Card";
+import { Button } from "../components/Button";
+import { EmptyStateCard } from "../components/EmptyStateCard";
+import { PageHeader } from "../components/PageHeader";
 import { Screen } from "../components/Screen";
+import { Section } from "../components/Section";
+import { SegmentGroup } from "../components/SegmentGroup";
 import { useDealDeskApp } from "../hooks/useDealDeskApp";
 import { theme } from "../theme/theme";
 import type { Offer } from "../types/domain";
@@ -41,8 +45,10 @@ function optionalNumber(value: string) {
 }
 
 export function ManualQuoteScreen() {
-  const { error, loading, saveManualQuote, selectedDealer } = useDealDeskApp();
+  const { error, loading, saveManualQuote, selectedDealer, vehicles } = useDealDeskApp();
   const router = useRouter();
+  const dealerVehicles = vehicles.filter((vehicle) => vehicle.dealerId === selectedDealer?._id);
+  const [vehicleId, setVehicleId] = useState<string | undefined>(selectedDealer?.focusVehicleId);
   const [numbers, setNumbers] = useState<Record<NumericKey, string>>({
     msrp: "",
     sellingPrice: "",
@@ -83,6 +89,7 @@ export function ManualQuoteScreen() {
     if (parsedAddOns.some((addOn) => Number.isNaN(addOn.amount))) return null;
     return {
       ...payload,
+      vehicleId,
       addOns: parsedAddOns,
       quoteCompleteness,
       sourceText: sourceText.trim() || undefined
@@ -107,23 +114,36 @@ export function ManualQuoteScreen() {
   if (!selectedDealer) {
     return (
       <Screen>
-        <Text style={styles.title}>Manual quote</Text>
-        <Card>
-          <Text style={styles.body}>Open a dealer before entering a manual quote.</Text>
-        </Card>
+        <PageHeader title="Manual quote" description="Enter a dealer's numbers by hand when you already have clean figures." />
+        <EmptyStateCard icon="storefront-outline" title="Open a dealer first" description="Open a dealer from the Dealers tab, then come back to enter a manual quote for them." />
       </Screen>
     );
   }
 
+  const vehicleOptions = [
+    { label: "None", value: "__none__" },
+    ...dealerVehicles.map((vehicle) => ({
+      label: [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") || vehicle.stockNumber || "Car",
+      value: vehicle._id
+    }))
+  ];
+
   return (
     <Screen>
-      <Text style={styles.title}>Manual quote</Text>
-      <Text style={styles.muted}>Selected dealer: {selectedDealer.name}</Text>
+      <PageHeader
+        title="Manual quote"
+        description={`Enter the dealer's numbers for ${selectedDealer.name}. DealDesk normalizes them into a true out-the-door price you can compare.`}
+      />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {validationError ? <Text style={styles.error}>{validationError}</Text> : null}
 
-      <Card>
-        <Text style={styles.kicker}>Core quote</Text>
+      {dealerVehicles.length ? (
+        <Section title="Car this quote is for" divider={false}>
+          <SegmentGroup options={vehicleOptions} value={vehicleId ?? "__none__"} onChange={(value) => setVehicleId(value === "__none__" ? undefined : value)} labelPrefix="Car" />
+        </Section>
+      ) : null}
+
+      <Section title="Core quote" divider={false}>
         {moneyFields.map(([label, key]) => (
           <TextInput
             key={key}
@@ -131,14 +151,14 @@ export function ManualQuoteScreen() {
             keyboardType="decimal-pad"
             onChangeText={(value) => updateNumber(key, value)}
             placeholder={label}
+            placeholderTextColor={theme.colors.faint}
             style={styles.input}
             value={numbers[key]}
           />
         ))}
-      </Card>
+      </Section>
 
-      <Card>
-        <Text style={styles.kicker}>Financing</Text>
+      <Section title="Financing">
         {financeFields.map(([label, key]) => (
           <TextInput
             key={key}
@@ -146,20 +166,21 @@ export function ManualQuoteScreen() {
             keyboardType="decimal-pad"
             onChangeText={(value) => updateNumber(key, value)}
             placeholder={label}
+            placeholderTextColor={theme.colors.faint}
             style={styles.input}
             value={numbers[key]}
           />
         ))}
-      </Card>
+      </Section>
 
-      <Card>
-        <Text style={styles.kicker}>Add-ons</Text>
+      <Section title="Add-ons">
         {addOns.map((addOn, index) => (
           <View key={index} style={styles.addOnRow}>
             <TextInput
               accessibilityLabel={`Add-on ${index + 1} name`}
               onChangeText={(value) => updateAddOn(index, { name: value })}
               placeholder="Name"
+              placeholderTextColor={theme.colors.faint}
               style={[styles.input, styles.addOnName]}
               value={addOn.name}
             />
@@ -168,13 +189,14 @@ export function ManualQuoteScreen() {
               keyboardType="decimal-pad"
               onChangeText={(value) => updateAddOn(index, { amount: value })}
               placeholder="Amount"
+              placeholderTextColor={theme.colors.faint}
               style={[styles.input, styles.addOnAmount]}
               value={addOn.amount}
             />
-            <Pressable accessibilityRole="button" onPress={() => updateAddOn(index, { required: !addOn.required })} style={styles.smallButton}>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Toggle add-on ${index + 1} required`} onPress={() => updateAddOn(index, { required: !addOn.required })} style={styles.smallButton}>
               <Text style={styles.smallButtonText}>{addOn.required ? "Req" : "Opt"}</Text>
             </Pressable>
-            <Pressable accessibilityRole="button" onPress={() => setAddOns((current) => current.filter((_, currentIndex) => currentIndex !== index))} style={styles.iconButton}>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Remove add-on ${index + 1}`} onPress={() => setAddOns((current) => current.filter((_, currentIndex) => currentIndex !== index))} style={styles.iconButton}>
               <Text style={styles.iconButtonText}>-</Text>
             </Pressable>
           </View>
@@ -182,57 +204,38 @@ export function ManualQuoteScreen() {
         <Pressable accessibilityRole="button" onPress={() => setAddOns((current) => [...current, { name: "", amount: "", required: false }])} style={styles.secondaryButton}>
           <Text style={styles.secondaryText}>Add add-on</Text>
         </Pressable>
-      </Card>
+      </Section>
 
-      <Card>
-        <Text style={styles.kicker}>Completeness</Text>
-        <View style={styles.segmentRow}>
-          {completenessOptions.map((option) => (
-            <Pressable key={option} accessibilityRole="button" onPress={() => setQuoteCompleteness(option)} style={[styles.segment, quoteCompleteness === option && styles.segmentActive]}>
-              <Text style={[styles.segmentText, quoteCompleteness === option && styles.segmentTextActive]}>{option}</Text>
-            </Pressable>
-          ))}
-        </View>
+      <Section title="Completeness">
+        <SegmentGroup options={completenessOptions.map((option) => ({ label: option, value: option }))} value={quoteCompleteness} onChange={(value) => setQuoteCompleteness(value as Offer["quoteCompleteness"])} labelPrefix="Completeness" />
         <TextInput
           accessibilityLabel="Quote notes"
           multiline
           onChangeText={setSourceText}
           placeholder="Notes or original quote text"
+          placeholderTextColor={theme.colors.faint}
           style={styles.textarea}
           value={sourceText}
         />
-      </Card>
+      </Section>
 
-      <Pressable accessibilityRole="button" disabled={loading} onPress={save} style={[styles.button, loading && styles.buttonDisabled]}>
-        <Text style={styles.buttonText}>{loading ? "Saving..." : "Save Manual Quote"}</Text>
-      </Pressable>
+      <Button label={loading ? "Saving..." : "Save Manual Quote"} disabled={loading} onPress={save} accessibilityLabel="Save Manual Quote" style={styles.selfStart} />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  title: { color: theme.colors.text, fontSize: 26, fontWeight: "900" },
-  kicker: { color: theme.colors.muted, fontSize: 13, fontWeight: "800", textTransform: "uppercase" },
-  body: { color: theme.colors.text, fontSize: 16, lineHeight: 22 },
-  muted: { color: theme.colors.muted },
-  error: { color: theme.colors.danger, fontWeight: "700" },
-  input: { borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, color: theme.colors.text, minHeight: 44, paddingHorizontal: 12 },
-  textarea: { borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, color: theme.colors.text, minHeight: 110, padding: 12, textAlignVertical: "top" },
-  addOnRow: { alignItems: "center", flexDirection: "row", gap: 8 },
+  selfStart: { alignSelf: "flex-start" },
+  error: { ...theme.typography.caption, color: theme.colors.danger },
+  input: { backgroundColor: theme.colors.inputBg, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, color: theme.colors.text, minHeight: 44, paddingHorizontal: theme.spacing.md },
+  textarea: { backgroundColor: theme.colors.inputBg, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, color: theme.colors.text, minHeight: 110, padding: theme.spacing.md, textAlignVertical: "top" },
+  addOnRow: { alignItems: "center", flexDirection: "row", gap: theme.spacing.sm },
   addOnName: { flex: 1.4 },
   addOnAmount: { flex: 1 },
-  button: { alignItems: "center", backgroundColor: theme.colors.primary, borderRadius: theme.radius, minHeight: 48, justifyContent: "center" },
-  buttonDisabled: { opacity: 0.65 },
-  buttonText: { color: "#fff", fontWeight: "800" },
-  secondaryButton: { alignItems: "center", borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, minHeight: 44, justifyContent: "center" },
-  secondaryText: { color: theme.colors.text, fontWeight: "800" },
-  smallButton: { alignItems: "center", backgroundColor: theme.colors.primarySoft, borderRadius: theme.radius, minHeight: 42, justifyContent: "center", width: 48 },
-  smallButtonText: { color: theme.colors.primary, fontWeight: "800" },
-  iconButton: { alignItems: "center", borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, minHeight: 42, justifyContent: "center", width: 36 },
-  iconButtonText: { color: theme.colors.text, fontSize: 20, fontWeight: "800" },
-  segmentRow: { flexDirection: "row", gap: 8 },
-  segment: { alignItems: "center", borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, flex: 1, minHeight: 42, justifyContent: "center" },
-  segmentActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  segmentText: { color: theme.colors.text, fontWeight: "800" },
-  segmentTextActive: { color: "#fff" }
+  secondaryButton: { alignItems: "center", backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, minHeight: 44, justifyContent: "center" },
+  secondaryText: { ...theme.typography.subtitle, color: theme.colors.text },
+  smallButton: { alignItems: "center", backgroundColor: theme.colors.primarySoft, borderRadius: theme.radii.md, minHeight: 42, justifyContent: "center", width: 48 },
+  smallButtonText: { ...theme.typography.subtitle, color: theme.colors.primary },
+  iconButton: { alignItems: "center", backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, minHeight: 42, justifyContent: "center", width: 36 },
+  iconButtonText: { color: theme.colors.text, fontSize: 20, fontWeight: "800" }
 });

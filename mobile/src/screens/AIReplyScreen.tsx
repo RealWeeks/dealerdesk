@@ -1,7 +1,14 @@
+import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput } from "react-native";
+import { StyleSheet, Text, TextInput, View } from "react-native";
+import { AiBadge } from "../components/AiBadge";
+import { Button } from "../components/Button";
 import { Card } from "../components/Card";
+import { GeneratingBlock } from "../components/GeneratingBlock";
+import { InsightCard } from "../components/InsightCard";
+import { PageHeader } from "../components/PageHeader";
+import { Reveal } from "../components/Reveal";
 import { Screen } from "../components/Screen";
 import { useDealDeskApp } from "../hooks/useDealDeskApp";
 import { theme } from "../theme/theme";
@@ -36,30 +43,46 @@ export function AIReplyScreen() {
 
   return (
     <Screen>
-      <Text style={styles.title}>AI reply</Text>
-      {selectedDealer ? <Text style={styles.muted}>For {selectedDealer.name}</Text> : <Text style={styles.muted}>Select a dealer before generating a reply.</Text>}
+      <PageHeader
+        title="AI reply"
+        description={selectedDealer ? `A negotiation reply for ${selectedDealer.name}, drafted to keep the price moving in your favor. Edit it, then copy or save.` : "Select a dealer before generating a reply."}
+        right={<AiBadge />}
+      />
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      {loading && !generatedReply ? <Text style={styles.muted}>Generating reply...</Text> : null}
-      <Card>
-        <TextInput accessibilityLabel="Reply text" multiline value={reply} onChangeText={setReply} placeholder="Generated reply will appear here..." style={styles.textarea} />
-        {generatedReply ? <Text style={styles.muted}>{generatedReply.strategyNotes}</Text> : null}
-        <Pressable accessibilityRole="button" disabled={!reply} onPress={copyReply} style={styles.button}><Text style={styles.buttonText}>{copied ? "Copied" : "Copy reply"}</Text></Pressable>
-        <Pressable accessibilityRole="button" disabled={!reply || loading} onPress={saveReply} style={styles.secondary}><Text style={styles.secondaryText}>{saved ? "Saved as sent" : "Save as sent"}</Text></Pressable>
-        {generatedReply?.suggestedFollowUpTitle ? (
-          <Pressable accessibilityRole="button" disabled={loading} onPress={createSuggestedFollowUp} style={styles.secondary}><Text style={styles.secondaryText}>Create follow-up task</Text></Pressable>
-        ) : null}
-      </Card>
+      {loading && !generatedReply ? (
+        <Card>
+          <GeneratingBlock messages={["Drafting a reply…", "Reviewing the latest offer…", "Keeping trade-in and financing separate…"]} />
+        </Card>
+      ) : (
+        <>
+          <Reveal>
+            <Card>
+              <View style={styles.draftHeader}>
+                <View style={styles.draftHeaderLeft}>
+                  <Ionicons name="sparkles" size={14} color={theme.colors.accent} />
+                  <Text style={styles.draftLabel}>Drafted reply</Text>
+                </View>
+                <AiBadge label="AI" />
+              </View>
+              <TextInput accessibilityLabel="Reply text" multiline value={reply} onChangeText={setReply} placeholder="Generated reply will appear here..." placeholderTextColor={theme.colors.faint} style={styles.textarea} />
+              <Button label={copied ? "Copied" : "Copy reply"} disabled={!reply} onPress={copyReply} />
+              <Button label={saved ? "Saved as sent" : "Save as sent"} variant="secondary" disabled={!reply || loading} onPress={saveReply} />
+              {generatedReply?.suggestedFollowUpTitle ? (
+                <Button label="Create follow-up task" variant="secondary" disabled={loading} onPress={createSuggestedFollowUp} />
+              ) : null}
+            </Card>
+          </Reveal>
+          {generatedReply?.strategyNotes ? <InsightCard title="Why this works">{generatedReply.strategyNotes}</InsightCard> : null}
+        </>
+      )}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  title: { color: theme.colors.text, fontSize: 26, fontWeight: "900" },
-  muted: { color: theme.colors.muted },
-  error: { color: theme.colors.danger, fontWeight: "700" },
-  textarea: { borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, minHeight: 180, padding: 12, textAlignVertical: "top" },
-  button: { alignItems: "center", backgroundColor: theme.colors.primary, borderRadius: theme.radius, minHeight: 46, justifyContent: "center" },
-  buttonText: { color: "#fff", fontWeight: "800" },
-  secondary: { alignItems: "center", borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, minHeight: 46, justifyContent: "center" },
-  secondaryText: { color: theme.colors.text, fontWeight: "800" }
+  error: { ...theme.typography.body, color: theme.colors.danger, fontFamily: theme.fonts.semibold },
+  draftHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  draftHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
+  draftLabel: { ...theme.typography.label, color: theme.colors.muted, textTransform: "uppercase" },
+  textarea: { ...theme.typography.body, backgroundColor: theme.colors.inputBg, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, color: theme.colors.text, minHeight: 180, padding: theme.spacing.md, textAlignVertical: "top" }
 });

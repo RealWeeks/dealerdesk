@@ -1,9 +1,19 @@
 import * as Clipboard from "expo-clipboard";
+import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "expo-router";
 import { Linking, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { Badge } from "../components/Badge";
+import { AiBadge } from "../components/AiBadge";
+import { Button } from "../components/Button";
 import { Card } from "../components/Card";
+import { EmptyStateCard } from "../components/EmptyStateCard";
+import { InsightPanel } from "../components/InsightPanel";
+import { GuidedPageHeader, PageHeader } from "../components/PageHeader";
+import { RichList, RichListRow } from "../components/RichList";
+import { RightRail } from "../components/RightRail";
 import { Screen } from "../components/Screen";
+import { Section } from "../components/Section";
+import { PriorityBadge, StatusBadge } from "../components/StatusBadge";
 import { useDealDeskApp } from "../hooks/useDealDeskApp";
 import type { SearchDealer } from "../types/domain";
 import { theme } from "../theme/theme";
@@ -20,8 +30,11 @@ function dealerMeta(dealer: SearchDealer) {
 }
 
 export function OutreachQueueScreen() {
-  const { activeSearch, dealers, error, generateInitialOutreach, initialOutreach, loadMessageTemplates, loading, markOutreachContacted, messageTemplates } = useDealDeskApp();
+  const { activeSearch, dealers, error, generateInitialOutreach, initialOutreach, loadMessageTemplates, loading, markOutreachContacted, messageTemplates, vehicles } = useDealDeskApp();
+  const router = useRouter();
   const notContacted = dealers.filter((dealer) => dealer.status === "not_contacted");
+  const dealersWithCar = useMemo(() => new Set(vehicles.map((vehicle) => vehicle.dealerId)), [vehicles]);
+  const hasAnyCar = vehicles.length > 0;
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [messageText, setMessageText] = useState(initialOutreach?.messageText ?? "");
   const [strategyNotes, setStrategyNotes] = useState(initialOutreach?.strategyNotes ?? "");
@@ -31,8 +44,9 @@ export function OutreachQueueScreen() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [dismissedCarNudge, setDismissedCarNudge] = useState(false);
 
-  const grouped = useMemo(() => statuses.map((status) => ({
+  const grouped = useMemo(() => statuses.filter((status) => status !== "not_contacted").map((status) => ({
     status,
     dealers: dealers.filter((dealer) => dealer.status === status)
   })), [dealers]);
@@ -94,53 +108,116 @@ export function OutreachQueueScreen() {
   if (!activeSearch) {
     return (
       <Screen>
-        <Text style={styles.title}>Outreach queue</Text>
-        <Text style={styles.muted}>Create an active search before contacting dealers.</Text>
+        <PageHeader title="Outreach queue" description="Create an active search before contacting dealers." />
       </Screen>
     );
   }
 
-  return (
-    <Screen>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Outreach queue</Text>
-          <Text style={styles.muted}>{activeSearch.year} {activeSearch.make} {activeSearch.model} near {activeSearch.zipCode}</Text>
+  const readyLabel = notContacted.length
+    ? `${notContacted.length} dealer${notContacted.length === 1 ? "" : "s"} ready for first contact`
+    : "All dealers contacted";
+
+  function dealerRow(dealer: SearchDealer, selectable: boolean) {
+    const hasCar = dealersWithCar.has(dealer._id);
+    const selected = selectedIds.includes(dealer._id);
+    const trailing = (
+      <>
+        {dealer.websiteUrl ? <Button label="Website" variant="link" size="sm" onPress={() => Linking.openURL(dealer.websiteUrl!)} /> : null}
+        {dealer.inventoryUrl ? <Button label="Inventory" variant="link" size="sm" onPress={() => Linking.openURL(dealer.inventoryUrl!)} /> : null}
+      </>
+    );
+    return (
+      <RichListRow
+        key={dealer._id}
+        leading={selectable ? <Ionicons name={selected ? "checkmark-circle" : "ellipse-outline"} size={22} color={selected ? theme.colors.primary : theme.colors.faint} /> : undefined}
+        trailing={trailing}
+        onPress={selectable ? () => toggleDealer(dealer._id) : undefined}
+        selected={selected}
+        accessibilityLabel={selectable ? `Select ${dealer.name}` : undefined}
+      >
+        <Text style={styles.dealerName}>{dealer.name}</Text>
+        <Text style={styles.muted}>{dealerMeta(dealer)}</Text>
+        <View style={styles.badgeRow}>
+          <StatusBadge status={dealer.status} />
+          <PriorityBadge priority={dealer.priority} />
         </View>
-        <Badge label={`${notContacted.length} new`} tone={notContacted.length ? "warning" : "success"} />
-      </View>
+        <View style={styles.carRow}>
+          <Ionicons name={hasCar ? "car-sport" : "car-sport-outline"} size={13} color={hasCar ? theme.colors.success : theme.colors.faint} />
+          <Text style={[styles.carText, hasCar && styles.carOn]}>{hasCar ? "Car captured" : "No car captured yet"}</Text>
+        </View>
+      </RichListRow>
+    );
+  }
+
+  const rail = (notContacted.length || messageText) ? (
+    <RightRail>
+      <InsightPanel title="Send outreach" icon="send-outline" accent>
+        {notContacted.length ? (
+          <>
+            <View style={styles.row}>
+              <Text style={styles.selectedCount}>{selectedIds.length} selected</Text>
+              <Pressable accessibilityRole="button" onPress={() => setSelectedIds(selectedIds.length === notContacted.length ? [] : notContacted.map((dealer) => dealer._id))}>
+                <Text style={styles.link}>{selectedIds.length === notContacted.length ? "Clear" : "Select all"}</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.muted}>Tap a dealer to include them, then generate one message for everyone selected.</Text>
+            <Button label={loading ? "Working..." : "Generate messages"} disabled={!selectedIds.length || loading} onPress={() => generateForSelection()} accessibilityLabel="Generate messages" />
+          </>
+        ) : null}
+        {messageText ? (
+          <>
+            <Button label={saved ? "Saved as contacted" : "Confirm sent and create follow-ups"} disabled={!selectedIds.length || !messageText || loading} onPress={() => markSent()} accessibilityLabel="Confirm sent and create follow-ups" />
+            <Button label={copied ? "Copied" : "Copy message"} variant="secondary" disabled={!messageText} onPress={copyMessage} accessibilityLabel="Copy message" />
+          </>
+        ) : null}
+      </InsightPanel>
+    </RightRail>
+  ) : undefined;
+
+  return (
+    <Screen rail={rail}>
+      <GuidedPageHeader
+        title="Outreach queue"
+        description={`Reach out to dealers for your ${activeSearch.year} ${activeSearch.make} ${activeSearch.model} near ${activeSearch.zipCode}. Select the dealers you want to contact, then generate a message you can send.`}
+        status={
+          <View style={styles.statusRow}>
+            <StatusBadge status={notContacted.length ? "not_contacted" : "contacted"} />
+            <Text style={styles.statusText}>{readyLabel}</Text>
+          </View>
+        }
+      />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {loading && !dealers.length ? <Text style={styles.muted}>Loading dealers...</Text> : null}
 
-      {notContacted.length ? (
-        <Card>
-          <View style={styles.row}>
-            <Text style={styles.kicker}>{selectedIds.length} selected</Text>
-            <Pressable accessibilityRole="button" onPress={() => setSelectedIds(selectedIds.length === notContacted.length ? [] : notContacted.map((dealer) => dealer._id))}>
-              <Text style={styles.link}>{selectedIds.length === notContacted.length ? "Clear" : "Select all"}</Text>
-            </Pressable>
+      {notContacted.length && !hasAnyCar && !dismissedCarNudge ? (
+        <Card style={styles.nudge}>
+          <View style={styles.kickerRow}>
+            <Text style={styles.kicker}>Better outreach starts with a specific car</Text>
+            <AiBadge label="Tip" />
           </View>
-          <Pressable accessibilityRole="button" disabled={!selectedIds.length || loading} onPress={() => generateForSelection()} style={styles.primaryButton}>
-            <Text style={styles.primaryText}>{loading ? "Working..." : "Generate Message"}</Text>
-          </Pressable>
+          <Text style={styles.body}>Dealers respond faster when you reference an exact listing. Capture a car first so DealDesk can ask for an itemized out-the-door price on that specific vehicle — or send general outreach now and add the car later.</Text>
+          <View style={styles.actions}>
+            <Button label="Capture a car first" size="sm" onPress={() => router.push("/dealers")} />
+            <Button label="Generate general outreach anyway" variant="secondary" size="sm" onPress={() => setDismissedCarNudge(true)} />
+          </View>
         </Card>
-      ) : (
-        <Card>
-          <Text style={styles.kicker}>Nothing waiting</Text>
-          <Text style={styles.muted}>No dealers need initial outreach.</Text>
-        </Card>
-      )}
+      ) : null}
+
+      {!notContacted.length ? (
+        <EmptyStateCard icon="checkmark-done-outline" title="No dealers need initial outreach" description="As soon as you add dealers who haven't been contacted, they'll show up here ready to message." />
+      ) : null}
 
       {messageText ? (
         <Card>
-          <Text style={styles.kicker}>Initial message</Text>
-          <TextInput accessibilityLabel="Initial outreach message" multiline value={messageText} onChangeText={setMessageText} style={styles.textarea} />
+          <View style={styles.kickerRow}>
+            <Text style={styles.kicker}>Initial message</Text>
+            <AiBadge label="AI" />
+          </View>
+          <TextInput accessibilityLabel="Initial outreach message" multiline value={messageText} onChangeText={setMessageText} style={styles.textarea} placeholderTextColor={theme.colors.faint} />
           {templateName ? <Text style={styles.body}>Template: {templateName}</Text> : null}
           {templateMeta ? <Text style={styles.muted}>{templateMeta}</Text> : null}
           {strategyNotes ? <Text style={styles.muted}>{strategyNotes}</Text> : null}
-          <Pressable accessibilityRole="button" onPress={() => { void loadMessageTemplates(selectedIds.length === 1 ? selectedIds[0] : undefined); setShowTemplates((current) => !current); }} style={styles.secondaryButton}>
-            <Text style={styles.secondaryText}>Choose different template</Text>
-          </Pressable>
+          <Button label="Choose different template" variant="link" size="sm" style={styles.selfStart} onPress={() => { void loadMessageTemplates(selectedIds.length === 1 ? selectedIds[0] : undefined); setShowTemplates((current) => !current); }} />
           {showTemplates ? (
             <View style={styles.templateList}>
               {messageTemplates.map((template) => (
@@ -152,71 +229,44 @@ export function OutreachQueueScreen() {
               ))}
             </View>
           ) : null}
-          <Pressable accessibilityRole="button" disabled={!messageText} onPress={copyMessage} style={styles.primaryButton}>
-            <Text style={styles.primaryText}>{copied ? "Copied" : "Copy message"}</Text>
-          </Pressable>
-          <Pressable accessibilityRole="button" disabled={!selectedIds.length || !messageText || loading} onPress={() => markSent()} style={styles.secondaryButton}>
-            <Text style={styles.secondaryText}>{saved ? "Saved as contacted" : "Confirm sent and create follow-ups"}</Text>
-          </Pressable>
         </Card>
       ) : null}
 
+      {notContacted.length ? (
+        <Section title="Ready for first contact" divider={false}>
+          <RichList>{notContacted.map((dealer) => dealerRow(dealer, true))}</RichList>
+        </Section>
+      ) : null}
+
       {grouped.map((group) => group.dealers.length ? (
-        <View key={group.status} style={styles.section}>
-          <Text style={styles.sectionTitle}>{statusLabel(group.status)}</Text>
-          {group.dealers.map((dealer) => (
-            <Card key={dealer._id}>
-              <View style={styles.row}>
-                <Text style={styles.dealerName}>{dealer.name}</Text>
-                <Badge label={dealer.priority} tone={dealer.priority === "high" ? "warning" : "neutral"} />
-              </View>
-              <Text style={styles.muted}>{dealerMeta(dealer)}</Text>
-              {dealer.phone ? <Text style={styles.muted}>{dealer.phone}</Text> : null}
-              <View style={styles.linkRow}>
-                {dealer.websiteUrl ? <Pressable onPress={() => Linking.openURL(dealer.websiteUrl!)}><Text style={styles.link}>Website</Text></Pressable> : null}
-                {dealer.inventoryUrl ? <Pressable onPress={() => Linking.openURL(dealer.inventoryUrl!)}><Text style={styles.link}>Inventory</Text></Pressable> : null}
-              </View>
-              {dealer.status === "not_contacted" ? (
-                <>
-                  <Pressable accessibilityLabel={`Select ${dealer.name}`} accessibilityRole="button" onPress={() => toggleDealer(dealer._id)} style={styles.checkRow}>
-                    <Text style={styles.checkbox}>{selectedIds.includes(dealer._id) ? "[x]" : "[ ]"}</Text>
-                    <Text style={styles.body}>Include in outreach</Text>
-                  </Pressable>
-                  <View style={styles.actions}>
-                    <Pressable accessibilityRole="button" disabled={loading} onPress={() => generateForSelection(dealer._id)} style={styles.secondaryButton}><Text style={styles.secondaryText}>Generate Message</Text></Pressable>
-                    <Pressable accessibilityRole="button" disabled={loading} onPress={() => markSent(dealer._id)} style={styles.secondaryButton}><Text style={styles.secondaryText}>Mark Contacted</Text></Pressable>
-                  </View>
-                </>
-              ) : null}
-            </Card>
-          ))}
-        </View>
+        <Section key={group.status} title={statusLabel(group.status)}>
+          <RichList>{group.dealers.map((dealer) => dealerRow(dealer, false))}</RichList>
+        </Section>
       ) : null)}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  title: { color: theme.colors.text, fontSize: 26, fontWeight: "900" },
-  header: { alignItems: "flex-start", flexDirection: "row", justifyContent: "space-between", gap: 12 },
-  section: { gap: theme.spacing.sm },
-  sectionTitle: { color: theme.colors.text, fontSize: 18, fontWeight: "900", textTransform: "capitalize" },
-  kicker: { color: theme.colors.muted, fontSize: 13, fontWeight: "800", textTransform: "uppercase" },
-  dealerName: { color: theme.colors.text, flex: 1, fontSize: 18, fontWeight: "800" },
-  body: { color: theme.colors.text },
-  muted: { color: theme.colors.muted },
-  error: { color: theme.colors.danger, fontWeight: "700" },
-  row: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", gap: 12 },
-  linkRow: { flexDirection: "row", gap: 16 },
-  link: { color: theme.colors.primary, fontWeight: "800" },
-  checkRow: { alignItems: "center", flexDirection: "row", gap: 8, minHeight: 40 },
-  checkbox: { color: theme.colors.text, fontWeight: "900" },
-  actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  textarea: { borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, color: theme.colors.text, minHeight: 180, padding: 12, textAlignVertical: "top" },
-  primaryButton: { alignItems: "center", backgroundColor: theme.colors.primary, borderRadius: theme.radius, minHeight: 46, justifyContent: "center" },
-  primaryText: { color: "#fff", fontWeight: "800" },
-  secondaryButton: { alignItems: "center", borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, minHeight: 42, justifyContent: "center", paddingHorizontal: 12 },
-  secondaryText: { color: theme.colors.text, fontWeight: "800" },
+  statusRow: { flexDirection: "row", alignItems: "center", gap: theme.spacing.sm, flexWrap: "wrap" },
+  statusText: { ...theme.typography.body, color: theme.colors.muted },
+  kicker: { ...theme.typography.label, color: theme.colors.muted, textTransform: "uppercase" },
+  kickerRow: { alignItems: "center", flexDirection: "row", gap: theme.spacing.sm, justifyContent: "space-between" },
+  nudge: { borderColor: theme.colors.selectedBorder },
+  body: { ...theme.typography.body, color: theme.colors.text },
+  muted: { ...theme.typography.caption, color: theme.colors.muted },
+  error: { ...theme.typography.caption, color: theme.colors.danger },
+  row: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", gap: theme.spacing.sm },
+  selectedCount: { ...theme.typography.label, color: theme.colors.text, textTransform: "uppercase" },
+  link: { ...theme.typography.subtitle, color: theme.colors.primary },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing.sm },
+  selfStart: { alignSelf: "flex-start" },
+  dealerName: { ...theme.typography.subtitle, color: theme.colors.text },
+  badgeRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: theme.spacing.sm },
+  carRow: { flexDirection: "row", alignItems: "center", gap: 5 },
+  carText: { ...theme.typography.caption, color: theme.colors.muted },
+  carOn: { color: theme.colors.success },
+  textarea: { backgroundColor: theme.colors.inputBg, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, color: theme.colors.text, minHeight: 180, padding: theme.spacing.md, textAlignVertical: "top" },
   templateList: { gap: theme.spacing.sm },
-  templateOption: { borderColor: theme.colors.border, borderRadius: theme.radius, borderWidth: 1, gap: 4, padding: 10 }
+  templateOption: { backgroundColor: theme.colors.bgElevated, borderColor: theme.colors.border, borderRadius: theme.radii.md, borderWidth: 1, gap: 4, padding: theme.spacing.sm }
 });

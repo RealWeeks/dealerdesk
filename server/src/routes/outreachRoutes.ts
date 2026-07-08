@@ -8,7 +8,8 @@ import { MessageTemplateUsage } from "../models/MessageTemplateUsage";
 import { Offer } from "../models/Offer";
 import { SearchDealer } from "../models/SearchDealer";
 import { Task } from "../models/Task";
-import { buildInitialOutreachMessage, renderTemplateBody } from "../services/outreachService";
+import { Vehicle } from "../models/Vehicle";
+import { buildInitialOutreachMessage, renderTemplateBody, vehicleDescriptor } from "../services/outreachService";
 import { HttpError } from "../utils/httpError";
 import { assertObjectId } from "../utils/objectId";
 
@@ -29,6 +30,13 @@ async function requireDealerForSearch(userId: string, dealerId: string, carSearc
   return dealer;
 }
 
+async function requireVehicleForSearch(userId: string, vehicleId: string, carSearchId: string) {
+  assertObjectId(vehicleId, "vehicleId");
+  const vehicle = await Vehicle.findOne({ _id: vehicleId, userId, carSearchId });
+  if (!vehicle) throw new HttpError(404, "Vehicle not found for this search");
+  return vehicle;
+}
+
 async function requireVisibleTemplate(userId: string, templateId: string) {
   assertObjectId(templateId, "templateId");
   const template = await MessageTemplate.findOne({ _id: templateId, isActive: true, $or: [{ isBuiltIn: true, userId: null }, { userId }] });
@@ -41,6 +49,11 @@ router.post("/outreach/initial-message", async (req: AuthRequest, res, next) => 
     const body = initialOutreachMessageSchema.parse(req.body);
     const search = await requireSearch(req.user!.id, body.carSearchId);
     const dealer = body.dealerId ? await requireDealerForSearch(req.user!.id, body.dealerId, body.carSearchId) : undefined;
+
+    // Anchor to the requested car, or fall back to the dealer's focus car.
+    const focusVehicleId = dealer?.get("focusVehicleId") ? String(dealer.get("focusVehicleId")) : undefined;
+    const vehicleId = body.vehicleId ?? focusVehicleId;
+    const vehicle = vehicleId ? await requireVehicleForSearch(req.user!.id, vehicleId, body.carSearchId) : undefined;
 
     let selected = body.templateId ? await requireVisibleTemplate(req.user!.id, body.templateId) : null;
     let usedWithThisDealer = false;
@@ -76,14 +89,14 @@ router.post("/outreach/initial-message", async (req: AuthRequest, res, next) => 
       usedWithThisDealer = Boolean(usage);
     }
 
-    if (!selected) return res.json(buildInitialOutreachMessage(search));
+    if (!selected) return res.json(buildInitialOutreachMessage(search, vehicle));
 
     res.json({
       templateId: selected._id,
       templateName: selected.get("name"),
       category: selected.get("category"),
       tone: selected.get("tone"),
-      messageText: renderTemplateBody(String(selected.get("body")), search, dealer),
+      messageText: renderTemplateBody(String(selected.get("body")), search, dealer, vehicle),
       strategyNotes: usedWithThisDealer
         ? "This template has already been used with this dealer. It was selected because every active initial outreach template has been used."
         : "Unused initial outreach template selected for this dealer.",
@@ -106,6 +119,8 @@ router.post("/outreach/mark-contacted", async (req: AuthRequest, res, next) => {
     const dealers = await SearchDealer.find({ _id: { $in: uniqueDealerIds }, userId: req.user!.id, carSearchId: body.carSearchId });
     if (dealers.length !== uniqueDealerIds.length) throw new HttpError(404, "One or more dealers were not found for this search");
 
+    const explicitVehicle = body.vehicleId ? await requireVehicleForSearch(req.user!.id, body.vehicleId, body.carSearchId) : null;
+
     const now = new Date();
     const duplicateWindowStart = new Date(now.getTime() - 10 * 60 * 1000);
     const followUpDueAt = body.followUpDueAt ?? new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000);
@@ -124,10 +139,16 @@ router.post("/outreach/mark-contacted", async (req: AuthRequest, res, next) => {
         createdAt: { $gte: duplicateWindowStart }
       }).sort({ createdAt: -1 });
 
+      // Explicit vehicle wins; otherwise anchor to the dealer's focus car.
+      const vehicleDoc = explicitVehicle ?? (dealer.get("focusVehicleId")
+        ? await Vehicle.findOne({ _id: dealer.get("focusVehicleId"), userId: req.user!.id, carSearchId: body.carSearchId })
+        : null);
+
       const interaction = existingInteraction ?? await Interaction.create({
         userId: req.user!.id,
         carSearchId: body.carSearchId,
         dealerId: dealer._id,
+        vehicleId: vehicleDoc?._id,
         type: "email",
         direction: "outbound",
         rawContent: body.messageText,
@@ -163,7 +184,7 @@ router.post("/outreach/mark-contacted", async (req: AuthRequest, res, next) => {
       updatedDealers.push(await dealer.save());
 
       if (body.createFollowUp) {
-        const title = `Follow up with ${dealer.get("name")}`;
+        const title = `Follow up with ${dealer.get("name")}${vehicleDoc ? ` on ${vehicleDescriptor(vehicleDoc)}` : ""}`;
         const existingTask = await Task.findOne({
           userId: req.user!.id,
           carSearchId: body.carSearchId,

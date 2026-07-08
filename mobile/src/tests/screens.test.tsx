@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AddUpdateScreen } from "../screens/AddUpdateScreen";
 import { AIReplyScreen } from "../screens/AIReplyScreen";
+import { CaptureVehicleScreen } from "../screens/CaptureVehicleScreen";
 import { CompareOffersScreen } from "../screens/CompareOffersScreen";
 import { DealerDetailScreen } from "../screens/DealerDetailScreen";
 import { DealersScreen } from "../screens/DealersScreen";
@@ -19,12 +20,27 @@ vi.mock("../hooks/useDealDeskApp", () => ({
 }));
 
 const replace = vi.fn();
+const push = vi.fn();
 vi.mock("expo-router", () => ({
-  useRouter: () => ({ replace })
+  useRouter: () => ({ replace, push })
 }));
 
 vi.mock("expo-clipboard", () => ({
   setStringAsync: vi.fn()
+}));
+
+vi.mock("expo-image-picker", () => ({
+  requestMediaLibraryPermissionsAsync: vi.fn().mockResolvedValue({ granted: true }),
+  launchImageLibraryAsync: vi.fn().mockResolvedValue({ canceled: false, assets: [{ base64: "BASE64DATA" }] }),
+  MediaTypeOptions: { Images: "Images" }
+}));
+
+vi.mock("expo-linear-gradient", () => ({
+  LinearGradient: (props: { children?: unknown }) => props.children ?? null
+}));
+
+vi.mock("@expo/vector-icons", () => ({
+  Ionicons: () => null
 }));
 
 const baseState: AppContextValue = {
@@ -33,8 +49,10 @@ const baseState: AppContextValue = {
   activeSearch: { _id: "search1", year: 2026, make: "Lexus", model: "RX 350h", trim: "Premium AWD", zipCode: "04101", searchRadiusMiles: 150, targetOtdPrice: 62000, status: "active" },
   dealers: [{ _id: "dealer1", carSearchId: "search1", dealerSeedId: "seed1", name: "Lexus of Portland", brand: "Lexus", city: "Portland", state: "ME", status: "needs_reply", priority: "high" }],
   offers: [{ _id: "offer1", dealerId: "dealer1", otdPrice: 61000, sellingPrice: 57500, quoteCompleteness: "partial", addOns: [], redFlags: [] }],
+  vehicles: [{ _id: "veh1", dealerId: "dealer1", carSearchId: "search1", year: 2026, make: "Lexus", model: "RX 350h", trim: "Premium AWD", vin: "JTHGP8CA5N1234567", stockNumber: "L24-8891", listedPrice: 61480, status: "interested" }],
   selectedDealer: { _id: "dealer1", carSearchId: "search1", dealerSeedId: "seed1", name: "Lexus of Portland", brand: "Lexus", city: "Portland", state: "ME", status: "needs_reply", priority: "high" },
   pendingExtraction: null,
+  pendingVehicleCapture: null,
   generatedReply: { replyText: "Thanks, please confirm itemized OTD.", strategyNotes: "Keep trade separate.", suggestedFollowUpTitle: "Follow up on OTD", suggestedFollowUpDueAt: "2026-07-09T12:00:00.000Z" },
   initialOutreach: null,
   interactions: [{ _id: "int1", dealerId: "dealer1", type: "email", direction: "outbound", rawContent: "Sent reply" }],
@@ -60,6 +78,11 @@ const baseState: AppContextValue = {
   addDealer: vi.fn(),
   saveManualQuote: vi.fn().mockResolvedValue(true),
   selectDealer: vi.fn(),
+  captureVehicleFromUrl: vi.fn().mockResolvedValue(true),
+  captureVehicleFromImage: vi.fn().mockResolvedValue(true),
+  confirmVehicleCapture: vi.fn().mockResolvedValue(true),
+  discardVehicleCapture: vi.fn(),
+  setFocusVehicle: vi.fn(),
   parseDealerMessage: vi.fn(),
   confirmPendingExtraction: vi.fn(),
   generateReply: vi.fn(),
@@ -79,6 +102,11 @@ function mockApp(overrides: Partial<AppContextValue> = {}) {
 async function settle() {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+// Flush chained promises (permission -> picker -> capture) including a macrotask.
+async function flush() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 describe("DealDesk connected mobile screens", () => {
@@ -130,21 +158,27 @@ describe("DealDesk connected mobile screens", () => {
     expect(screen.getByText("1 dealers not contacted")).toBeTruthy();
   });
 
-  it("find dealers calls seeded dealer search and add dealer action", async () => {
-    const searchDealerSeeds = vi.fn().mockResolvedValue([{ _id: "seed1", name: "Lexus of Portland", brand: "Lexus", city: "Portland", state: "ME", distanceMiles: 2.1 }]);
+  it("find dealers searches real dealers and shows their website", async () => {
+    const searchDealerSeeds = vi.fn().mockResolvedValue({ dealers: [{ _id: "seed1", name: "Lexus of Portland", brand: "Lexus", city: "Portland", state: "ME", websiteUrl: "https://lexusofportland.example", distanceMiles: 2.1 }], warnings: [] });
     const addDealer = vi.fn();
     mockApp({ searchDealerSeeds, addDealer });
     render(<FindDealersScreen />);
-    await fireEvent.press(screen.getByText("Search Seeded Dealers"));
+    fireEvent.press(screen.getByText("Search dealers"));
     expect(searchDealerSeeds).toHaveBeenCalledWith("Lexus", "04101", 150);
+    await flush();
+    expect(screen.getByText("Lexus of Portland")).toBeTruthy();
+    expect(screen.getByLabelText("Website for Lexus of Portland")).toBeTruthy();
   });
 
   it("search setup loads active search values and saves edits", async () => {
     const saveSearch = vi.fn().mockResolvedValue(true);
     mockApp({ saveSearch });
     render(<SearchSetupScreen />);
-    expect(screen.getByDisplayValue("Lexus")).toBeTruthy();
-    fireEvent.changeText(screen.getByLabelText("Make"), "Toyota");
+    expect(screen.getByText("Lexus")).toBeTruthy(); // make dropdown shows current value
+    fireEvent.press(screen.getByLabelText("Make")); // open the dropdown
+    await settle();
+    fireEvent.press(screen.getByLabelText("Toyota")); // pick a make
+    await settle();
     fireEvent.changeText(screen.getByLabelText("ZIP"), "90210");
     fireEvent.changeText(screen.getByLabelText("Radius"), "75");
     fireEvent.press(screen.getByText("Save Search"));
@@ -155,7 +189,7 @@ describe("DealDesk connected mobile screens", () => {
 
   it("find dealers shows empty guidance before search", () => {
     render(<FindDealersScreen />);
-    expect(screen.getByText(/Search seeded dealers/)).toBeTruthy();
+    expect(screen.getByText(/real dealerships/)).toBeTruthy();
   });
 
   it("dealers screen opens dealer detail through app state", () => {
@@ -178,7 +212,6 @@ describe("DealDesk connected mobile screens", () => {
     expect(generateReply).toHaveBeenCalled();
     expect(markSelectedDealerContacted).toHaveBeenCalled();
     expect(createSuggestedFollowUp).toHaveBeenCalled();
-    expect(screen.getByText(/outbound: Sent reply/)).toBeTruthy();
   });
 
   it("dealer detail generates and saves initial outreach", async () => {
@@ -199,7 +232,7 @@ describe("DealDesk connected mobile screens", () => {
     mockApp({ parseDealerMessage });
     render(<AddUpdateScreen />);
     fireEvent.changeText(screen.getByLabelText("Dealer message"), "Dealer says 61k OTD");
-    fireEvent.press(screen.getByText("Review AI Extraction"));
+    fireEvent.press(screen.getByText("Review AI extraction"));
     expect(parseDealerMessage).toHaveBeenCalledWith("Dealer says 61k OTD");
   });
 
@@ -305,7 +338,7 @@ describe("DealDesk connected mobile screens", () => {
     render(<OutreachQueueScreen />);
     fireEvent.press(screen.getByLabelText("Select Lexus of Portland"));
     await settle();
-    fireEvent.press(screen.getAllByText("Generate Message")[0]);
+    fireEvent.press(screen.getByText("Generate messages"));
     await settle();
     expect(generateInitialOutreach).toHaveBeenCalled();
   });
@@ -357,22 +390,91 @@ describe("DealDesk connected mobile screens", () => {
     expect(markOutreachContacted).toHaveBeenCalledWith(["dealer1"], "Initial outreach message", true, "template2");
   });
 
-  it("dealer detail renders communication timeline and empty timeline state", () => {
+  it("dealer detail renders the unified dealer timeline and empty timeline state", () => {
     render(<DealerDetailScreen />);
-    expect(screen.getByText("Timeline")).toBeTruthy();
-    expect(screen.getByText(/interaction: Outbound message sent/)).toBeTruthy();
-    expect(screen.getByText(/offer: Offer saved/)).toBeTruthy();
-    expect(screen.getByText(/task: Follow-up task created/)).toBeTruthy();
-    expect(screen.getByText(/template_usage: Initial outreach template used/)).toBeTruthy();
+    expect(screen.getByText("Dealer timeline")).toBeTruthy();
+    expect(screen.getByText("Outbound message sent")).toBeTruthy();
+    expect(screen.getByText(/Offer saved/)).toBeTruthy();
+    expect(screen.getByText(/Follow-up task created/)).toBeTruthy();
+    expect(screen.getByText(/Initial outreach template used/)).toBeTruthy();
 
     mockApp({ timeline: [] });
     render(<DealerDetailScreen />);
-    expect(screen.getByText("No timeline events yet.")).toBeTruthy();
+    expect(screen.getByText("No timeline yet")).toBeTruthy();
   });
 
   it("outreach queue renders empty state when no dealers need outreach", () => {
     mockApp({ dealers: [{ ...baseState.dealers[0], status: "contacted" }] });
     render(<OutreachQueueScreen />);
-    expect(screen.getByText("No dealers need initial outreach.")).toBeTruthy();
+    expect(screen.getByText("No dealers need initial outreach")).toBeTruthy();
+  });
+
+  it("capture screen captures a car from a pasted link", () => {
+    const captureVehicleFromUrl = vi.fn().mockResolvedValue(true);
+    mockApp({ captureVehicleFromUrl });
+    render(<CaptureVehicleScreen />);
+    fireEvent.changeText(screen.getByLabelText("Listing URL"), "https://dealer.example/inv/abc");
+    fireEvent.press(screen.getByText("Capture from link"));
+    expect(captureVehicleFromUrl).toHaveBeenCalledWith("https://dealer.example/inv/abc");
+  });
+
+  it("capture screen reads a screenshot and captures from the image", async () => {
+    const captureVehicleFromImage = vi.fn().mockResolvedValue(true);
+    mockApp({ captureVehicleFromImage });
+    render(<CaptureVehicleScreen />);
+    fireEvent.press(screen.getByText("Choose screenshot"));
+    await flush();
+    expect(captureVehicleFromImage).toHaveBeenCalledWith("BASE64DATA");
+  });
+
+  it("capture screen hands off to the editable review once a car is captured", async () => {
+    const confirmVehicleCapture = vi.fn().mockResolvedValue(true);
+    mockApp({
+      confirmVehicleCapture,
+      pendingVehicleCapture: {
+        extractionId: "ex1",
+        vehicle: { year: 2026, make: "Lexus", model: "RX 350h", trim: "Premium AWD", vin: "JTHGP8CA5N1234567", stockNumber: "L24-8891", listedPrice: 61480 },
+        confidence: "medium",
+        warnings: ["No listed price detected."]
+      }
+    });
+    render(<CaptureVehicleScreen />);
+    expect(screen.getByDisplayValue("Lexus")).toBeTruthy();
+    expect(screen.getByDisplayValue("JTHGP8CA5N1234567")).toBeTruthy();
+    fireEvent.changeText(screen.getByLabelText("Trim"), "Luxury AWD");
+    fireEvent.press(screen.getByText("Save car"));
+    expect(confirmVehicleCapture).toHaveBeenCalledWith(expect.objectContaining({ make: "Lexus", model: "RX 350h", trim: "Luxury AWD", vin: "JTHGP8CA5N1234567", listedPrice: 61480 }));
+    await flush();
+    expect(replace).toHaveBeenCalledWith("/dealers");
+  });
+
+  it("dealer detail lists cars, navigates to capture, and sets the focus car", () => {
+    const setFocusVehicle = vi.fn();
+    mockApp({ setFocusVehicle });
+    render(<DealerDetailScreen />);
+    fireEvent.press(screen.getByText("Capture car"));
+    expect(push).toHaveBeenCalledWith("/capture-vehicle");
+    fireEvent.press(screen.getByLabelText("Focus 2026 Lexus RX 350h Premium AWD · #L24-8891"));
+    expect(setFocusVehicle).toHaveBeenCalledWith("veh1");
+  });
+
+  it("manual quote attaches the selected car to the offer", async () => {
+    const saveManualQuote = vi.fn().mockResolvedValue(true);
+    mockApp({ saveManualQuote });
+    render(<ManualQuoteScreen />);
+    fireEvent.press(screen.getByLabelText("Car 2026 Lexus RX 350h"));
+    fireEvent.changeText(screen.getByLabelText("Selling price"), "59000");
+    fireEvent.press(screen.getByText("Save Manual Quote"));
+    expect(saveManualQuote).toHaveBeenCalledWith(expect.objectContaining({ vehicleId: "veh1", sellingPrice: 59000 }));
+    await Promise.resolve();
+    expect(replace).toHaveBeenCalledWith("/offers");
+  });
+
+  it("compare offers labels an offer with its specific car", () => {
+    mockApp({
+      offers: [{ _id: "offer1", dealerId: "dealer1", vehicleId: "veh1", otdPrice: 61000, sellingPrice: 57500, quoteCompleteness: "complete", addOns: [], redFlags: [] }]
+    });
+    render(<CompareOffersScreen />);
+    expect(screen.getByText(/2026 Lexus RX 350h/)).toBeTruthy();
   });
 });

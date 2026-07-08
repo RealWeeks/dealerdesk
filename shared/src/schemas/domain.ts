@@ -41,6 +41,7 @@ export const searchDealerPatchSchema = z.object({
   status: z.enum(dealerStatuses).optional(),
   priority: z.enum(priorities).optional(),
   notes: z.string().optional(),
+  focusVehicleId: z.string().optional(),
   lastContactedAt: z.coerce.date().optional(),
   nextFollowUpAt: z.coerce.date().optional()
 });
@@ -113,6 +114,7 @@ export const vehiclePatchSchema = vehicleSchema.partial();
 export const initialOutreachMessageSchema = z.object({
   carSearchId: z.string().min(1),
   dealerId: z.string().min(1).optional(),
+  vehicleId: z.string().min(1).optional(),
   templateId: z.string().min(1).optional(),
   tone: z.enum(["friendly", "firm", "concise"]).default("friendly")
 });
@@ -120,11 +122,27 @@ export const initialOutreachMessageSchema = z.object({
 export const markOutreachContactedSchema = z.object({
   carSearchId: z.string().min(1),
   dealerIds: z.array(z.string().min(1)).min(1),
+  vehicleId: z.string().min(1).optional(),
   messageText: z.string().min(1),
   templateId: z.string().min(1).optional(),
   createFollowUp: z.boolean().default(true),
   followUpDueAt: z.coerce.date().optional()
 });
+
+export const captureVehicleSchema = z.object({
+  carSearchId: z.string().min(1),
+  dealerId: z.string().min(1),
+  source: z.enum(["url", "image", "text"]),
+  url: z.string().url().optional(),
+  imageBase64: z.string().min(1).optional(),
+  rawText: z.string().min(1).optional()
+}).refine(
+  (value) =>
+    (value.source === "url" && !!value.url) ||
+    (value.source === "image" && !!value.imageBase64) ||
+    (value.source === "text" && !!value.rawText),
+  { message: "Provide the field matching the selected source (url, imageBase64, or rawText)." }
+);
 
 export const messageTemplateSchema = z.object({
   name: z.string().min(1),

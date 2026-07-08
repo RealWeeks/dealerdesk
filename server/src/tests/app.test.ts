@@ -1,7 +1,9 @@
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app";
 import { DealerSeed } from "../models/DealerSeed";
+import { DealerSearchCoverage } from "../models/DealerSearchCoverage";
+import { setDealerDiscoveryIO, resetDealerDiscoveryIO } from "../services/dealerDiscoveryService";
 import { AIExtraction } from "../models/AIExtraction";
 import { Interaction } from "../models/Interaction";
 import { MessageTemplate } from "../models/MessageTemplate";
@@ -10,9 +12,11 @@ import { Offer } from "../models/Offer";
 import { SearchDealer } from "../models/SearchDealer";
 import { Task } from "../models/Task";
 import { User } from "../models/User";
+import { Vehicle } from "../models/Vehicle";
 import { attachSeededDealers, seedDealerSeeds } from "../seed/dealerSeedService";
 import { seedBuiltInMessageTemplates } from "../seed/messageTemplateService";
 import { setAIClient } from "../services/aiService";
+import { resetVehicleCaptureIO, setVehicleCaptureIO } from "../services/vehicleCaptureService";
 import { haversineMiles } from "../utils/haversine";
 import { seedDealers } from "../utils/seedDealers";
 
@@ -52,6 +56,22 @@ async function addDealer(token: string, searchId: string) {
     .set("Authorization", `Bearer ${token}`)
     .send({ dealerSeedId: seed!.id, priority: "high" });
   return { dealer: res.body, seed };
+}
+
+// An AI client with no listing parser — forces the capture cascade onto the free
+// (JSON-LD + regex) methods only, keeping the test hermetic regardless of env.
+function aiClientWithoutListing() {
+  return {
+    async parseDealerMessage() { return {}; },
+    async generateReply() { return { replyText: "", strategyNotes: "", suggestedFollowUpTitle: "" }; }
+  };
+}
+
+async function captureVehicleText(token: string, searchId: string, dealerId: string, rawText: string) {
+  return request(app)
+    .post("/ai/capture-vehicle")
+    .set("Authorization", `Bearer ${token}`)
+    .send({ carSearchId: searchId, dealerId, source: "text", rawText });
 }
 
 describe("DealDesk API", () => {
@@ -615,5 +635,299 @@ describe("DealDesk API", () => {
 
     const otherView = await request(app).get(`/message-templates?category=initial_outreach&dealerId=${dealer._id}`).set("Authorization", `Bearer ${other}`);
     expect(otherView.status).toBe(404);
+  });
+
+  it("captures a vehicle from pasted text with the free parser and does not call AI when sufficient", async () => {
+    const token = await auth("cap-text@example.com");
+    const search = await createSearch(token);
+    const { dealer } = await addDealer(token, search._id);
+
+    let aiCalled = false;
+    setAIClient({
+      async parseDealerMessage() { return {}; },
+      async parseListing() { aiCalled = true; return null; },
+      async generateReply() { return { replyText: "", strategyNotes: "", suggestedFollowUpTitle: "" }; }
+    });
+
+    const res = await captureVehicleText(token, search._id, dealer._id, "2026 Lexus RX 350h Premium AWD VIN JTHGP8CA5N1234567 listed at $61,480 stock #L24-8891");
+    expect(res.status).toBe(200);
+    expect(res.body.extractionId).toBeTruthy();
+    expect(res.body.vehicle.vin).toBe("JTHGP8CA5N1234567");
+    expect(res.body.vehicle.listedPrice).toBe(61480);
+    expect(res.body.vehicle.stockNumber).toBe("L24-8891");
+    expect(aiCalled).toBe(false); // free methods were sufficient
+
+    const extraction = await AIExtraction.findById(res.body.extractionId);
+    expect(extraction!.get("inputType")).toBe("listing");
+    expect(extraction!.get("userConfirmed")).toBe(false);
+  });
+
+  it("captures a vehicle from a URL using embedded JSON-LD without AI", async () => {
+    const token = await auth("cap-url@example.com");
+    const search = await createSearch(token);
+    const { dealer } = await addDealer(token, search._id);
+    setAIClient(aiClientWithoutListing());
+
+    const jsonLd = JSON.stringify({
+      "@type": "Vehicle",
+      vehicleModelDate: "2026",
+      brand: { name: "Lexus" },
+      model: "RX 350h",
+      vehicleConfiguration: "Premium AWD",
+      vehicleIdentificationNumber: "JTHGP8CA5N7654321",
+      sku: "L24-1000",
+      color: "Nori Green Pearl",
+      offers: { price: "60990" },
+      url: "https://dealer.example/inv/abc"
+    });
+    setVehicleCaptureIO({
+      async fetchListingHtml() {
+        return `<html><head><script type="application/ld+json">${jsonLd}</script></head><body>loading…</body></html>`;
+      }
+    });
+
+    const res = await request(app)
+      .post("/ai/capture-vehicle")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ carSearchId: search._id, dealerId: dealer._id, source: "url", url: "https://dealer.example/inv/abc" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.vehicle.make).toBe("Lexus");
+    expect(res.body.vehicle.model).toBe("RX 350h");
+    expect(res.body.vehicle.vin).toBe("JTHGP8CA5N7654321");
+    expect(res.body.vehicle.listedPrice).toBe(60990);
+    expect(res.body.confidence).toBe("high");
+    resetVehicleCaptureIO();
+  });
+
+  it("warns when a scraped page returns almost no readable text", async () => {
+    const token = await auth("cap-spa@example.com");
+    const search = await createSearch(token);
+    const { dealer } = await addDealer(token, search._id);
+    setAIClient(aiClientWithoutListing());
+    setVehicleCaptureIO({ async fetchListingHtml() { return "<html><body><div id='root'></div></body></html>"; } });
+
+    const res = await request(app)
+      .post("/ai/capture-vehicle")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ carSearchId: search._id, dealerId: dealer._id, source: "url", url: "https://spa.example/x" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.warnings.join(" ")).toMatch(/JavaScript-only|screenshot/i);
+    resetVehicleCaptureIO();
+  });
+
+  it("captures a vehicle from a screenshot via OCR text", async () => {
+    const token = await auth("cap-image@example.com");
+    const search = await createSearch(token);
+    const { dealer } = await addDealer(token, search._id);
+    setAIClient(aiClientWithoutListing());
+    setVehicleCaptureIO({ async ocrImage() { return "2025 Toyota Camry XSE VIN 4T1BZ1HK5NU123456 $34,995 Stock# T-2231"; } });
+
+    const res = await request(app)
+      .post("/ai/capture-vehicle")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ carSearchId: search._id, dealerId: dealer._id, source: "image", imageBase64: "data:image/png;base64,iVBORw0KGgo=" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.vehicle.vin).toBe("4T1BZ1HK5NU123456");
+    expect(res.body.vehicle.listedPrice).toBe(34995);
+    expect(res.body.vehicle.stockNumber).toBe("T-2231");
+    resetVehicleCaptureIO();
+  });
+
+  it("escalates to AI only when free parsing is insufficient", async () => {
+    const token = await auth("cap-ai@example.com");
+    const search = await createSearch(token);
+    const { dealer } = await addDealer(token, search._id);
+
+    let aiCalled = false;
+    setAIClient({
+      async parseDealerMessage() { return {}; },
+      async parseListing() {
+        aiCalled = true;
+        return { vehicle: { year: 2026, make: "Lexus", model: "RX 350h", trim: "Premium AWD", listedPrice: 59900 }, confidence: "high", warnings: [] };
+      },
+      async generateReply() { return { replyText: "", strategyNotes: "", suggestedFollowUpTitle: "" }; }
+    });
+
+    const res = await captureVehicleText(token, search._id, dealer._id, "Do you have a Lexus RX in stock?");
+    expect(res.status).toBe(200);
+    expect(aiCalled).toBe(true);
+    expect(res.body.vehicle.make).toBe("Lexus");
+    expect(res.body.vehicle.model).toBe("RX 350h");
+    expect(res.body.vehicle.listedPrice).toBe(59900);
+  });
+
+  it("confirms a listing extraction into a Vehicle, sets the dealer focus car once, and blocks double-confirm", async () => {
+    const token = await auth("cap-confirm@example.com");
+    const search = await createSearch(token);
+    const { dealer } = await addDealer(token, search._id);
+    setAIClient(aiClientWithoutListing());
+
+    const capture = await captureVehicleText(token, search._id, dealer._id, "2026 Lexus RX 350h VIN JTHGP8CA5N1234567 $61,480 stock #L24-8891");
+    const confirm = await request(app)
+      .post(`/ai-extractions/${capture.body.extractionId}/confirm`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ vehicle: { make: "Lexus", model: "RX 350h", trim: "Premium AWD" } });
+
+    expect(confirm.status).toBe(200);
+    expect(confirm.body.vehicle.trim).toBe("Premium AWD");
+    expect(confirm.body.vehicle.vin).toBe("JTHGP8CA5N1234567");
+    expect(confirm.body.vehicle.dealerId).toBe(dealer._id);
+
+    const dealerDoc = await SearchDealer.findById(dealer._id);
+    expect(String(dealerDoc!.get("focusVehicleId"))).toBe(String(confirm.body.vehicle._id));
+    expect(await Vehicle.countDocuments({ carSearchId: search._id })).toBe(1);
+
+    const duplicate = await request(app).post(`/ai-extractions/${capture.body.extractionId}/confirm`).set("Authorization", `Bearer ${token}`);
+    expect(duplicate.status).toBe(409);
+    expect(await Vehicle.countDocuments({ carSearchId: search._id })).toBe(1);
+
+    // A second captured car must not steal the existing focus.
+    const capture2 = await captureVehicleText(token, search._id, dealer._id, "2026 Lexus RX 350h VIN JTHGP8CA5N9999999 $62,000 stock #L24-2000");
+    const confirm2 = await request(app).post(`/ai-extractions/${capture2.body.extractionId}/confirm`).set("Authorization", `Bearer ${token}`);
+    expect(confirm2.status).toBe(200);
+    const dealerDoc2 = await SearchDealer.findById(dealer._id);
+    expect(String(dealerDoc2!.get("focusVehicleId"))).toBe(String(confirm.body.vehicle._id));
+    expect(await Vehicle.countDocuments({ carSearchId: search._id })).toBe(2);
+  });
+
+  it("threads the focus car through initial outreach and mark-contacted", async () => {
+    const token = await auth("cap-anchor@example.com");
+    const search = await createSearch(token);
+    const { dealer } = await addDealer(token, search._id);
+    setAIClient(aiClientWithoutListing());
+
+    const capture = await captureVehicleText(token, search._id, dealer._id, "2026 Lexus RX 350h VIN JTHGP8CA5N1234567 $61,480 stock #L24-8891");
+    const confirm = await request(app)
+      .post(`/ai-extractions/${capture.body.extractionId}/confirm`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ vehicle: { make: "Lexus", model: "RX 350h", trim: "Premium AWD" } });
+    const vehicleId = confirm.body.vehicle._id;
+
+    const message = await request(app)
+      .post("/outreach/initial-message")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ carSearchId: search._id, dealerId: dealer._id });
+    expect(message.status).toBe(200);
+    expect(message.body.messageText).toContain("RX 350h");
+    expect(message.body.messageText).toContain("JTHGP8CA5N1234567");
+    expect(message.body.messageText).toContain("Is it still available?");
+
+    const marked = await request(app)
+      .post("/outreach/mark-contacted")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ carSearchId: search._id, dealerIds: [dealer._id], messageText: "Hi, is stock #L24-8891 still available?", createFollowUp: true });
+    expect(marked.status).toBe(200);
+    expect(String(marked.body.interactions[0].vehicleId)).toBe(String(vehicleId));
+    expect(marked.body.tasks[0].title).toContain("L24-8891");
+  });
+
+  it("requires auth, validates input, and scopes capture by user", async () => {
+    const unauth = await request(app).post("/ai/capture-vehicle").send({ carSearchId: "x", dealerId: "y", source: "text", rawText: "z" });
+    expect(unauth.status).toBe(401);
+
+    const token = await auth("cap-scope-a@example.com");
+    const other = await auth("cap-scope-b@example.com");
+    const search = await createSearch(token);
+    const { dealer } = await addDealer(token, search._id);
+    setAIClient(aiClientWithoutListing());
+
+    const missingField = await request(app)
+      .post("/ai/capture-vehicle")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ carSearchId: search._id, dealerId: dealer._id, source: "url" });
+    expect(missingField.status).toBe(400);
+
+    const crossUser = await request(app)
+      .post("/ai/capture-vehicle")
+      .set("Authorization", `Bearer ${other}`)
+      .send({ carSearchId: search._id, dealerId: dealer._id, source: "text", rawText: "2026 $1,000" });
+    expect(crossUser.status).toBe(404);
+  });
+
+  const laPlace = { latitude: 34.0537, longitude: -118.2428, city: "Los Angeles", state: "CA" };
+  const overpassToyota = [
+    { lat: 34.05, lon: -118.24, tags: { name: "Toyota of Downtown LA", brand: "Toyota", "addr:city": "Los Angeles", "addr:state": "CA", phone: "213-555-0100", website: "https://toyotadtla.example" } },
+    { center: { lat: 34.1, lon: -118.2 }, tags: { name: "Longo Toyota", brand: "Toyota" } },
+    { lat: 34.2, lon: -118.3, tags: { name: "Honda World", brand: "Honda", website: "https://hondaworld.example" } }
+  ];
+
+  it("discovers real dealers (free/keyless), filters by brand, and caches them in the DB", async () => {
+    const token = await auth("discover-a@example.com");
+    const overpass = vi.fn().mockResolvedValue(overpassToyota);
+    setDealerDiscoveryIO({ geocodeZip: async () => laPlace, searchOverpass: overpass });
+
+    // ZIP 90012 is NOT in the seeded 6 — proves geocoding removed that limit.
+    const res = await request(app).get("/dealer-seeds/discover?brand=Toyota&zip=90012&radius=50").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    const names = res.body.dealers.map((dealer: { name: string }) => dealer.name);
+    expect(names).toContain("Toyota of Downtown LA");
+    expect(names).toContain("Longo Toyota");
+    expect(names).not.toContain("Honda World"); // brand filter drops non-Toyota
+
+    const dtla = res.body.dealers.find((dealer: { name: string }) => dealer.name === "Toyota of Downtown LA");
+    expect(dtla._id).toBeTruthy();
+    expect(dtla.websiteUrl).toBe("https://toyotadtla.example");
+    expect(typeof dtla.distanceMiles).toBe("number");
+
+    // Only the requested brand is stored/returned (the Honda POI is filtered out).
+    expect(await DealerSeed.countDocuments({ source: "osm" })).toBe(2);
+    expect(await DealerSearchCoverage.countDocuments({ brand: "toyota" })).toBe(1);
+    expect(overpass).toHaveBeenCalledTimes(1);
+    resetDealerDiscoveryIO();
+  });
+
+  it("serves a covered area from the DB without re-calling the directory, and refresh forces a re-fetch", async () => {
+    const token = await auth("discover-cache@example.com");
+    const header = `Bearer ${token}`;
+    const overpass = vi.fn().mockResolvedValue(overpassToyota);
+    setDealerDiscoveryIO({ geocodeZip: async () => laPlace, searchOverpass: overpass });
+    const url = "/dealer-seeds/discover?brand=Toyota&zip=90012&radius=50";
+
+    const first = await request(app).get(url).set("Authorization", header);
+    expect(first.body.dealers.length).toBe(2);
+
+    const second = await request(app).get(url).set("Authorization", header);
+    expect(second.status).toBe(200);
+    expect(second.body.dealers.length).toBe(2); // served from our DB
+    expect(overpass).toHaveBeenCalledTimes(1); // cache hit — no external call
+
+    const refreshed = await request(app).get(`${url}&refresh=true`).set("Authorization", header);
+    expect(refreshed.status).toBe(200);
+    expect(overpass).toHaveBeenCalledTimes(2); // refresh bypasses the cache
+    expect(await DealerSeed.countDocuments({ source: "osm" })).toBe(2); // upsert, no duplicates
+    resetDealerDiscoveryIO();
+  });
+
+  it("lets a discovered dealer be added to a car search", async () => {
+    const token = await auth("discover-add@example.com");
+    const header = `Bearer ${token}`;
+    const search = await createSearch(token);
+    setDealerDiscoveryIO({ geocodeZip: async () => laPlace, searchOverpass: vi.fn().mockResolvedValue(overpassToyota) });
+
+    const discovered = await request(app).get("/dealer-seeds/discover?brand=Toyota&zip=90012&radius=50").set("Authorization", header);
+    const first = discovered.body.dealers[0];
+    const added = await request(app).post(`/car-searches/${search._id}/dealers`).set("Authorization", header).send({ dealerSeedId: first._id });
+    expect(added.status).toBe(201);
+    expect(added.body.name).toBe(first.name);
+    expect(added.body.dealerSeedId).toBe(first._id);
+    resetDealerDiscoveryIO();
+  });
+
+  it("degrades gracefully when the dealer directory is unavailable", async () => {
+    const token = await auth("discover-fail@example.com");
+    setDealerDiscoveryIO({ geocodeZip: async () => laPlace, searchOverpass: async () => { throw new Error("overpass down"); } });
+    const res = await request(app).get("/dealer-seeds/discover?brand=Subaru&zip=90012&radius=50").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.dealers).toEqual([]);
+    expect(res.body.warnings.length).toBeGreaterThan(0);
+    resetDealerDiscoveryIO();
+  });
+
+  it("requires auth for dealer discovery", async () => {
+    const res = await request(app).get("/dealer-seeds/discover?brand=Toyota&zip=90012&radius=50");
+    expect(res.status).toBe(401);
   });
 });

@@ -1,12 +1,28 @@
 import { Router } from "express";
 import { z } from "zod";
+import { requireAuth } from "../middleware/auth";
 import { DealerSeed } from "../models/DealerSeed";
+import { discoverDealers } from "../services/dealerDiscoveryService";
 import { haversineMiles } from "../utils/haversine";
 import { zipCoordinates } from "../utils/zipCoordinates";
 import { seedDealers } from "../utils/seedDealers";
 import { HttpError } from "../utils/httpError";
 
 const router = Router();
+
+// Live dealer discovery (real dealerships + websites via OpenStreetMap), cached in
+// our own DB. Authed since it can trigger outbound calls; it's behind login anyway.
+router.get("/dealer-seeds/discover", requireAuth, async (req, res, next) => {
+  try {
+    const query = z
+      .object({ brand: z.string().min(1), zip: z.string().min(5), radius: z.coerce.number().positive(), refresh: z.string().optional() })
+      .parse(req.query);
+    const result = await discoverDealers({ brand: query.brand, zip: query.zip, radiusMiles: query.radius, refresh: query.refresh === "true" });
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
 
 router.get("/dealer-seeds/search", async (req, res, next) => {
   try {
