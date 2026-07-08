@@ -1,0 +1,33 @@
+{
+  "name": "dealdesk",
+  "private": true,
+  "workspaces": [
+    "server",
+    "mobile",
+    "shared"
+  ],
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks || true",
+    "test": "npm run test -w @dealdesk/server && npm run test -w @dealdesk/mobile",
+    "build": "npm run build -w @dealdesk/shared && npm run build -w @dealdesk/server",
+    "check:server": "npm run build -w @dealdesk/shared && npm run build -w @dealdesk/server && npm run test -w @dealdesk/server",
+    "dev": "npm run dev:server",
+    "start": "npm --prefix mobile run start -- --web --port 8081 --host localhost",
+    "web": "npm --prefix mobile run start -- --web --port 8081 --host localhost",
+    "mobile": "npm --prefix mobile run start",
+    "dev:server": "npm run build -w @dealdesk/shared && npm run dev -w @dealdesk/server",
+    "dev:mobile": "npm run start -w @dealdesk/mobile",
+    "seed:dealers": "npm run seed:dealers -w @dealdesk/server --",
+    "seed:attach-dealers": "npm run seed:attach-dealers -w @dealdesk/server --",
+    "seed:templates": "npm run seed:templates -w @dealdesk/server --"
+  },
+  "overrides": {
+    "react": "19.0.0",
+    "react-test-renderer": "19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "pretty-format": "^29.7.0",
+    "react": "19.0.0"
+  }
+}

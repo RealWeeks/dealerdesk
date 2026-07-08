@@ -1,0 +1,37 @@
+#!/bin/sh
+#
+# Blocks commits that would add secret / credential files.
+# Catches the case .gitignore can't: force-adds (git add -f) and
+# sensitive files that don't happen to match an ignore rule.
+#
+# To bypass intentionally (rare, be sure!):  git commit --no-verify
+
+# Staged files that are Added, Copied, or Modified.
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+# Files matching these patterns are refused.
+#  - any .env variant EXCEPT *.example templates
+#  - private keys / certs / keystores / provisioning profiles
+#  - *credentials*.json / *serviceAccount*.json
+blocked=$(printf '%s\n' "$staged" | grep -E \
+  -e '(^|/)\.env($|\.[^/]*$)' \
+  -e '\.(pem|key|p12|pfx|crt|cer|keystore|jks|p8|mobileprovision)$' \
+  -e '[Cc]redentials.*\.json$' \
+  -e '[Ss]erviceAccount.*\.json$' \
+  | grep -vE '\.example$' )
+
+if [ -n "$blocked" ]; then
+  echo ""
+  echo "✋ Commit blocked — these look like secret/credential files:"
+  echo ""
+  printf '   %s\n' $blocked
+  echo ""
+  echo "   Remove them from the commit:   git restore --staged <file>"
+  echo "   They should stay in .gitignore, not the repo."
+  echo "   If this is a false positive:    git commit --no-verify"
+  echo ""
+  exit 1
+fi
+
+exit 0
